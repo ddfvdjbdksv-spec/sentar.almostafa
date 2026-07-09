@@ -7,8 +7,8 @@
     <meta name="theme-color" content="#4f46e5">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="سنتر مصطفى">
-    <title>سنتر مصطفى</title>
+    <meta name="apple-mobile-web-app-title" content="سنتر المصطفى">
+    <title>سنتر المصطفى</title>
     <style>
         .search-results-dropdown {
             position: absolute;
@@ -81,7 +81,7 @@
     <!-- Font Awesome: non-blocking عند offline -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all'" onerror="this.remove()">
     <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"></noscript>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer onerror="console.warn('Chart.js not available offline')"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" async onerror="console.warn('Chart.js not available offline')"></script>
 </head>
 
 <body>
@@ -93,8 +93,8 @@
                 <div class="splash-logo" style="margin-bottom: 1.5rem;">
                     <i class="fas fa-university"></i>
                 </div>
-                <h1 class="splash-title">سنتر مصطفى</h1>
-                <p class="splash-subtitle">نظام الإدارة المتكامل | لغة إنجليزية</p>
+                <h1 class="splash-title">سنتر المصطفى</h1>
+                <p class="splash-subtitle">نظام الإدارة المتكامل</p>
 
                 <div id="password-screen">
                     <p style="color: var(--text-muted); margin-bottom: 2rem; font-size: 1.1rem;">يرجى إدخال كلمة المرور للمتابعة</p>
@@ -131,7 +131,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
         <div class="logo">
-            <i class="fas fa-book-open"></i> سنتر مصطفى
+            <i class="fas fa-book-open"></i> سنتر المصطفى
         </div>
         <div id="current-grade-badge"
             style="text-align: center; margin-bottom: 1.5rem; padding: 0.5rem; background: var(--bg-light); border-radius: 10px; font-weight: 700; color: var(--primary);">
@@ -209,6 +209,12 @@
                 </li>
 
 
+                <li class="nav-item" data-rbac="all">
+                    <a href="#" class="nav-link" id="nav-handouts" onclick="showSection('handouts', this)">
+                        <i class="fas fa-book" style="color:var(--royal-gold)"></i>
+                        <span>إدارة الملازم</span>
+                    </a>
+                </li>
                 <li class="nav-item" data-rbac="admin">
                     <a href="#" class="nav-link" id="nav-daily-treasury" onclick="showSection('daily-treasury', this)">
                         <i class="fas fa-cash-register" style="color:var(--accent)"></i>
@@ -322,7 +328,10 @@
                         style="margin-left: 1rem; font-weight: 700; color: var(--primary); padding: 0.3rem 0.8rem; background: rgba(79, 70, 229, 0.1); border-radius: 50px;">
                         ... الدراسية</div>
                     <div class="avatar">M</div>
-                    <span style="font-weight: 600;">سنتر مصطفى</span>
+                    <div style="display:flex; flex-direction:column; line-height:1.2;">
+                        <span style="font-weight: 600;">سنتر المصطفى</span>
+                        <small class="user-specialization" style="font-size:0.65rem; opacity:0.7; font-weight:400;">أستاذ التاريخ والجغرافيا</small>
+                    </div>
                 </div>
             </div>
         </header>
@@ -580,8 +589,22 @@
 
         <!-- Fast Grading Section (The High-Tech Feature) -->
         <section id="fast-grading-section" style="display:none;" class="fade-in text-center">
-            <h2 style="margin-bottom: 2rem;">نظام الرصد السريع بالذكاء الاصطناعي (AI Scanner Grading) ⚡</h2>
+            <h2 style="margin-bottom: 1.5rem;">نظام رصد الدرجات ⚡</h2>
 
+            <!-- ✅ اختيار طريقة الرصد -->
+            <div style="display:flex; justify-content:center; gap:1rem; margin-bottom: 2rem;">
+                <button id="grading-mode-btn-barcode" class="btn btn-primary" onclick="switchGradingMode('barcode')"
+                    style="padding:0.9rem 1.8rem; border-radius:14px; font-weight:800;">
+                    <i class="fas fa-barcode"></i> الرصد السريع بالباركود
+                </button>
+                <button id="grading-mode-btn-manual" class="btn" onclick="switchGradingMode('manual')"
+                    style="padding:0.9rem 1.8rem; border-radius:14px; font-weight:800; background:var(--bg-light); color:var(--text-main);">
+                    <i class="fas fa-keyboard"></i> الرصد اليدوي
+                </button>
+            </div>
+
+            <!-- ==================== وضع 1: الرصد السريع بالباركود ==================== -->
+            <div id="grading-mode-barcode-panel">
             <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 2.5rem;">
                 <!-- Scanner View -->
                 <div class="card" style="padding: 2rem; border: 4px solid var(--primary); border-radius: 32px;">
@@ -609,11 +632,11 @@
                                 <i class="fas fa-barcode"></i> مسح الباركود (جهاز الباركود):
                             </h4>
                             <input type="text" id="barcode-grading-entry" placeholder="قف هنا وابدأ المسح بالجهاز..."
-                                class="form-input"
+                                class="form-input" autofocus
                                 style="margin-bottom: 0; background: #ffffff; border-color: var(--accent); font-weight: 600;"
                                 oninput="handleBarcodeGrading(this.value)">
                             <p style="font-size: 0.75rem; color: var(--accent); margin-top: 0.5rem; opacity: 0.8;">
-                                سيتم فتح خانة الدرجة تلقائياً بمجرد قراءة الكود
+                                سيتم فتح خانة الدرجة تلقائياً بمجرد قراءة الكود، وبعد الحفظ يرجع المؤشر هنا تلقائيًا لمسح الطالب التالي
                             </p>
                         </div>
                     </div>
@@ -663,6 +686,64 @@
                     </div>
                 </div>
             </div>
+            </div>
+            <!-- ==================== نهاية وضع الباركود ==================== -->
+
+            <!-- ==================== وضع 2: الرصد اليدوي بلوحة المفاتيح ==================== -->
+            <div id="grading-mode-manual-panel" style="display:none;">
+
+                <!-- شاشة الإعداد: اختيار المجموعة + الامتحان + الدرجة النهائية -->
+                <div id="manual-grading-setup" class="card" style="max-width:700px; margin:0 auto 2rem; padding:2rem; border-radius:24px; border:2px solid var(--border);">
+                    <h3 style="margin-bottom:1.5rem;"><i class="fas fa-sliders-h"></i> إعداد جلسة الرصد اليدوي</h3>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; text-align:right;">
+                        <div>
+                            <label style="font-weight:700; margin-bottom:0.5rem; display:block;">المجموعة:</label>
+                            <select id="manual-grade-group-select" class="form-input" style="height:50px;">
+                                <option value="">-- اختر المجموعة --</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-weight:700; margin-bottom:0.5rem; display:block;">الامتحان:</label>
+                            <select id="manual-grade-exam-select" class="form-input" style="height:50px;">
+                                <option value="">-- اختر الامتحان --</option>
+                            </select>
+                        </div>
+                        <div style="grid-column: span 2;">
+                            <label style="font-weight:700; margin-bottom:0.5rem; display:block;">الدرجة النهائية:</label>
+                            <input type="number" id="manual-grade-max-marks" class="form-input" value="100"
+                                style="height:50px; text-align:center; font-weight:800; border-color:var(--vibrant-orange);">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" style="width:100%; height:56px; border-radius:14px; font-size:1.1rem; margin-top:1.5rem;"
+                        onclick="startManualGrading()">
+                        <i class="fas fa-play"></i> بدء الرصد
+                    </button>
+                </div>
+
+                <!-- قائمة الطلاب أثناء الرصد -->
+                <div id="manual-grading-list-wrap" style="display:none; max-width:800px; margin:0 auto;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                        <h3 id="manual-grading-title" style="margin:0;"></h3>
+                        <button class="btn" style="background:var(--bg-light);" onclick="exitManualGrading()">
+                            <i class="fas fa-arrow-right"></i> رجوع لإعادة الإعداد
+                        </button>
+                    </div>
+                    <div class="data-table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>اسم الطالب</th>
+                                    <th style="width:160px;">الدرجة</th>
+                                    <th style="width:100px;">الحالة</th>
+                                </tr>
+                            </thead>
+                            <tbody id="manual-grading-list-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <!-- ==================== نهاية وضع الرصد اليدوي ==================== -->
 
             <!-- Recent History -->
             <div class="data-table-container" style="margin-top: 3rem;">
@@ -893,6 +974,46 @@
                         </tr>
                     </thead>
                     <tbody id="students-list">
+                        <!-- Filled via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- قسم إدارة الملازم (Module جديدة مستقلة تماماً)                -->
+        <!-- ============================================================ -->
+        <section id="handouts-section" style="display:none;" class="fade-in">
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
+                <h2 style="font-weight: 700;"><i class="fas fa-book" style="color:var(--royal-gold)"></i> إدارة الملازم 📚</h2>
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; justify-content: flex-end;">
+                    <select id="handouts-archive-toggle" class="form-input" style="max-width: 200px; margin-bottom:0;" onchange="renderHandoutsSection()">
+                        <option value="active">الملازم النشطة</option>
+                        <option value="archived">أرشيف الملازم</option>
+                    </select>
+                    <button class="btn btn-primary" style="background: var(--royal-gold);" onclick="openAddHandoutModal()">
+                        <i class="fas fa-plus"></i> إضافة ملزمة
+                    </button>
+                </div>
+            </div>
+
+            <div class="data-table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>اسم الملزمة</th>
+                            <th>المجموعة</th>
+                            <th>السعر</th>
+                            <th>عدد الطلاب</th>
+                            <th>دفعوا</th>
+                            <th>لم يدفعوا</th>
+                            <th>إجمالي التحصيل</th>
+                            <th>الحالة</th>
+                            <th>إجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="handouts-list">
                         <!-- Filled via JS -->
                     </tbody>
                 </table>
@@ -2428,6 +2549,105 @@
         </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- مودال إضافة / تعديل ملزمة -->
+    <!-- ============================================================ -->
+    <div id="handout-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <h3 id="handout-modal-title" style="margin-bottom: 2rem; text-align: center;">إضافة ملزمة جديدة</h3>
+            <input type="hidden" id="handout-edit-id">
+            <div class="form-group">
+                <label style="display:block; margin-bottom:0.5rem; font-weight:600;">اسم الملزمة</label>
+                <input type="text" id="handout-title" placeholder="مثلاً: ملزمة النحو" class="form-input">
+            </div>
+            <div class="form-group">
+                <label style="display:block; margin-bottom:0.5rem; font-weight:600;">سعر الملزمة (ج.م)</label>
+                <input type="number" id="handout-price" placeholder="مثلاً: 20" class="form-input">
+            </div>
+            <div class="form-group">
+                <label style="display:block; margin-bottom:0.5rem; font-weight:600;">المجموعة التابعة لها (إجباري)</label>
+                <select id="handout-grade" class="form-input">
+                    <!-- Filled via JS -->
+                </select>
+            </div>
+            <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+                <button class="btn btn-primary" style="flex: 2; background: var(--royal-gold);" onclick="saveHandout()">حفظ الملزمة</button>
+                <button class="btn" style="flex: 1; background: var(--bg-light);" onclick="toggleModal('handout-modal', false)">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- مودال عرض طلاب الملزمة + الدفع الجماعي + البحث + الفلاتر + الطباعة -->
+    <!-- ============================================================ -->
+    <div id="handout-students-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <button class="modal-close-btn" onclick="toggleModal('handout-students-modal', false)">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3 id="handout-students-title" style="margin-bottom: 1rem; text-align: center;">طلاب الملزمة</h3>
+
+            <!-- تقرير سريع -->
+            <div id="handout-students-report"
+                style="display:flex; gap:1rem; flex-wrap:wrap; justify-content:center; margin-bottom:1.5rem;">
+                <!-- Filled via JS -->
+            </div>
+
+            <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:center; margin-bottom:1.5rem;">
+                <div style="position: relative; flex: 1; min-width: 220px;">
+                    <i class="fas fa-search"
+                        style="position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                    <input type="text" id="handout-students-search" class="form-input"
+                        placeholder="بحث بالاسم أو الكود..." style="padding-right: 40px; margin-bottom: 0;"
+                        oninput="renderHandoutStudentsList()">
+                </div>
+                <select id="handout-students-filter" class="form-input" style="max-width: 180px; margin-bottom:0;"
+                    onchange="renderHandoutStudentsList()">
+                    <option value="all">كل الطلاب</option>
+                    <option value="paid">الذين دفعوا فقط</option>
+                    <option value="unpaid">الذين لم يدفعوا فقط</option>
+                </select>
+                <button class="btn" style="background: var(--accent); color:#fff; white-space:nowrap;" onclick="batchMarkPaidSelectedHandout()">
+                    <i class="fas fa-check-double"></i> تسجيل دفع للمحدّدين
+                </button>
+                <button class="btn" style="background: var(--primary); color:#fff; white-space:nowrap;" onclick="printHandoutSheet()">
+                    <i class="fas fa-print"></i> طباعة كشف الملازم
+                </button>
+            </div>
+
+            <div class="data-table-container" style="max-height: 55vh; overflow-y: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="handout-students-select-all" onclick="toggleSelectAllHandoutStudents(this)"></th>
+                            <th>الاسم</th>
+                            <th>الكود</th>
+                            <th>رقم الهاتف</th>
+                            <th>حالة الدفع</th>
+                            <th>إجراء</th>
+                        </tr>
+                    </thead>
+                    <tbody id="handout-students-list">
+                        <!-- Filled via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- مودال اختيار الملزمة أثناء شاشة الحضور/الماسح -->
+    <div id="handout-picker-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content" style="max-width: 480px;">
+            <button class="modal-close-btn" onclick="toggleModal('handout-picker-modal', false)">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3 style="margin-bottom: 1.5rem; text-align: center;"><i class="fas fa-book"></i> دفع ملزمة</h3>
+            <div id="handout-picker-list" style="max-height: 350px; overflow-y:auto;">
+                <!-- Filled via JS -->
+            </div>
+        </div>
+    </div>
+
     <!-- Joint Day Selection Modal -->
     <div id="joint-day-modal" class="modal-overlay" style="display: none;">
         <div class="modal-content" style="max-width: 500px;">
@@ -3059,7 +3279,7 @@
                 </div>
                 <h1
                     style="font-size: 4rem; margin-bottom: 1rem; font-family: 'Outfit', sans-serif; letter-spacing: -1px; font-weight: 800;">
-                    سنتر <span style="background: linear-gradient(135deg, var(--primary), var(--turquoise)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">مصطفى</span></h1>
+                    سنتر <span style="background: linear-gradient(135deg, var(--primary), var(--turquoise)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">سنتر المصطفى</span></h1>
                 <p
                     style="font-size: 1.4rem; opacity: 0.85; font-weight: 300; max-width: 600px; margin: 0 auto; line-height: 1.6; color: var(--text-muted);">
                     بوابتك الذكية لإدارة العملية التعليمية بأحدث تقنيات العصر الحديث</p>
@@ -3213,7 +3433,7 @@
                         </div>
 
                         <p style="font-size: 1.8rem; margin-bottom: 2.5rem; font-weight: 400;">يَسُر إدارة <strong
-                                style="color:var(--primary); font-size: 2rem;">سنتر مصطفى</strong> أن
+                                style="color:var(--primary); font-size: 2rem;">سنتر المصطفى</strong> أن
                             تمنح
                             هذه
                             الشهادة لـ:</p>
@@ -3265,7 +3485,7 @@
                                 <p style="margin: 0; font-weight: 700; color: #1e293b;">توقيع المحاضر</p>
                                 <div id="cert-teacher-name"
                                     style="font-family: 'Dancing Script', cursive; font-size: 1.8rem; color: var(--primary); margin-top: 5px;">
-                                    سنتر مصطفى</div>
+                                    سنتر المصطفى</div>
                             </div>
 
                             <div style="background: white; padding: 10px; border: 1px solid #eee; border-radius: 10px;">
@@ -3297,10 +3517,11 @@
             </div>
         </div>
 
-        <script src="https://unpkg.com/html5-qrcode"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+        <!-- مكتبات خارجية (باركود/QR) — تُحمَّل بلا حجب (defer) حتى لا تُعطِّل الدخول offline -->
+        <script src="https://unpkg.com/html5-qrcode" async onerror="console.warn('html5-qrcode not available offline')"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" async onerror="console.warn('qrcodejs not available offline')"></script>
+        <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js" async onerror="console.warn('jsbarcode not available offline')"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" async onerror="console.warn('html2canvas not available offline')"></script>
         <!-- Data file - must be loaded BEFORE app.js -->
         <script src="data.js?v=3" onerror="console.warn('data.js not found - fresh install mode');"></script>
         <script src="code-generator.js"></script>
@@ -3308,6 +3529,9 @@
         <script src="app.js?v=7"></script>
         <script src="platform-subscriptions.js?v=3"></script>
         <script src="transfer-student.js?v=1"></script>
+        <!-- وحدة إدارة الملازم (مستقلة تماماً - لا تعدّل أي سكريبت قائم) -->
+        <script src="grade-mapping.js?v=1"></script>
+        <script src="handouts-module.js?v=1"></script>
         <script>
     // ============================================================
     //  نظام التحديث التلقائي للتطبيق — النسخة المحسّنة

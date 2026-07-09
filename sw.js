@@ -9,7 +9,7 @@
 //    5. أو: يُطبَّق تلقائياً بعد 10 ثوانٍ بدون تدخّل
 // ============================================================
 
-const CACHE_VERSION = 'markaz-mostafa-pwa-v13';
+const CACHE_VERSION = 'markaz-al-mostafa-center-pwa-v20';
 
 const APP_SHELL = [
   './',
@@ -21,11 +21,22 @@ const APP_SHELL = [
   './transfer-student.js',
   './code-generator.js',
   './grade-mapping.js',
+  './handouts-module.js',
   './manifest.webmanifest',
   './app-icon-192.png',
   './app-icon-512.png',
   './app-icon-maskable-512.png',
   './apple-touch-icon.png'
+];
+
+// مكتبات خارجية (CDN) — تُخزَّن مسبقاً وقت التثبيت لضمان عملها أوفلاين
+// فوراً من أول تشغيل، بدلاً من انتظار أول استخدام ناجح لها أونلاين
+const EXTERNAL_LIBS = [
+  'https://unpkg.com/html5-qrcode',
+  'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
+  'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+  'https://cdn.jsdelivr.net/npm/chart.js'
 ];
 
 // ─── Install: تحميل كل ملفات الـ App Shell في الـ Cache ───
@@ -34,7 +45,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_VERSION)
       .then((cache) => Promise.all(
-        APP_SHELL.map((url) =>
+        [...APP_SHELL, ...EXTERNAL_LIBS].map((url) =>
           cache.add(url).catch((err) => {
             console.warn('[SW] Failed to cache:', url, err);
             return null;
@@ -84,7 +95,12 @@ self.addEventListener('activate', (event) => {
 // ─── Fetch: Cache-First للـ Shell، Network-First للباقي ───
 async function cacheFirst(request) {
   const cache = await caches.open(CACHE_VERSION);
-  const cached = await cache.match(request);
+  // ✅ إصلاح: تجاهل الـ query string (?v=N) عند المطابقة، لأن الملفات
+  // اتخزنت بدون ?v= وقت install لكن بتتطلب فعليًا بـ ?v= من index.html
+  // (مثال: app.js?v=7) — بدون ignoreSearch الطلب مكنش بيتطابق مع الكاش
+  // فيضطر يروح للشبكة، ولو أوفلاين كان بيفشل بالكامل (ده كان سبب تعطل
+  // تسجيل الدخول أوفلاين لأن app.js كان بيفشل في التحميل).
+  const cached = await cache.match(request, { ignoreSearch: true });
   if (cached) return cached;
   try {
     const fresh = await fetch(request, { cache: 'no-store' });
@@ -103,7 +119,8 @@ async function networkFirst(request) {
     if (fresh && fresh.ok) await cache.put(request, fresh.clone());
     return fresh;
   } catch (error) {
-    const cached = await cache.match(request);
+    // نفس إصلاح تجاهل الـ query string هنا كمان
+    const cached = await cache.match(request, { ignoreSearch: true });
     if (cached) return cached;
     if (request.mode === 'navigate') return cache.match('./index.html');
     throw error;

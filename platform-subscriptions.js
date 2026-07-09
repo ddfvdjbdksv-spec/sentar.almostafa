@@ -300,10 +300,7 @@ function populateCycleCourseSelect() {
 
     if (!courses.length) {
         select.innerHTML = `<option value="">-- لا توجد كورسات، اضغط "تحديث الكورسات" أولاً --</option>`;
-        // جلب تلقائي إذا كان الإنترنت متاحاً
-        if (navigator.onLine && typeof refreshPlatformCourses === 'function') {
-            refreshPlatformCourses().then(() => populateCycleCourseSelect());
-        }
+        // ✅ لا يوجد جلب تلقائي هنا — التحديث يتم فقط يدوياً عبر زر "تحديث الكورسات" / "مزامنة مع المنصة"
         return;
     }
 
@@ -955,18 +952,11 @@ function showSyncResultsModal(results, errors) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // مزامنة تلقائية عند عودة الاتصال
-    window.addEventListener('online', () => {
-        showNotification('🌐 تم استرجاع الاتصال بالإنترنت. جاري مزامنة الاشتراكات المعلّقة...', 'info');
-        setTimeout(syncPendingPlatformSubscriptions, 1500);
-    });
+    // ✅ تم إلغاء المزامنة التلقائية نهائياً (لا listener على 'online' ولا setInterval دوري).
+    // المزامنة الآن تتم حصرياً عند الضغط اليدوي على أزرار المزامنة المخصصة
+    // (مثل "مزامنة مع المنصة" و "مزامنة الاشتراكات المعلّقة").
 
-    // محاولة مزامنة دورية كل 5 دقائق إن وُجد اتصال
-    platformSubAutoSyncTimer = setInterval(() => {
-        syncPendingPlatformSubscriptions();
-    }, 5 * 60 * 1000);
-
-    // عرض شارة الاشتراكات المعلقة بعد تحميل البيانات
+    // عرض شارة الاشتراكات المعلقة بعد تحميل البيانات (محلي بالكامل، لا يتصل بالشبكة)
     setTimeout(updatePendingSyncBadge, 2000);
 });
 

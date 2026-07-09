@@ -48,5 +48,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, host, () => {
-    console.log(`Markaz Mostafa (سنتر مصطفى) is running at http://${host}:${port}`);
+    console.log(`Markaz Al-Mostafa Center (سنتر المصطفى) is running at http://${host}:${port}`);
 });

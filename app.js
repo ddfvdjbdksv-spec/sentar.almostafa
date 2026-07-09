@@ -195,7 +195,7 @@ window.RBAC = RBAC;
 // بالكامل — كانت وظائف مساعدة لقسم "مزامنة المنصة للموظف" اللي اعتمد على Firebase
 
 /**
- * سنتر مصطفى v2.0 - Core Intelligence Engine
+ * سنتر المصطفى v2.0 - Core Intelligence Engine
  * Specialized for Mr. Mohamed's Education Center
  */
 
@@ -203,6 +203,49 @@ window.RBAC = RBAC;
 // --- Database & Persistence ---
 let currentGrade = localStorage.getItem('edu_active_grade') || null;
 let currentGroupId = localStorage.getItem('edu_active_group') || null;
+
+/**
+ * ✅ إصلاح باج "تغيّر المجموعة تلقائيًا":
+ * أي دالة كانت بتعيد بناء innerHTML لـ <select> فلتر مجموعة كانت بتفقد
+ * اختيار المستخدم اليدوي وترجع لـ currentGroupId (المجموعة النشطة globally)
+ * بمجرد ما أي مزامنة/تايمر خلفي (مزامنة كل 5 دقايق، أرشفة كل دقيقة، ...)
+ * يستدعي refreshGroupContexts().
+ *
+ * الدالة دي بتحفظ قيمة الـ select قبل إعادة البناء، وبعد الرندر بترجّع
+ * نفس القيمة القديمة لو لسه موجودة ضمن الخيارات، بدل ما ترجع تلقائيًا
+ * لـ currentGroupId. لو مفيش قيمة محفوظة (أول تحميل)، بترجع للسلوك
+ * الافتراضي القديم (fallbackValue).
+ *
+ * @param {HTMLSelectElement} selectEl
+ * @param {Function} rebuildFn  - دالة بترجع الـ innerHTML الجديد (string)
+ * @param {string} [fallbackValue] - القيمة الافتراضية لو مفيش اختيار سابق
+ */
+function rebuildSelectPreservingSelection(selectEl, rebuildFn, fallbackValue) {
+    if (!selectEl) return;
+    const previousValue = selectEl.value; // احفظ اختيار المستخدم الحالي
+    selectEl.innerHTML = rebuildFn();
+
+    const hasPrevious = previousValue &&
+        Array.from(selectEl.options).some(o => o.value === previousValue);
+
+    if (hasPrevious) {
+        selectEl.value = previousValue; // رجّع نفس اختيار المستخدم
+    } else if (fallbackValue != null) {
+        const hasFallback = Array.from(selectEl.options).some(o => o.value === String(fallbackValue));
+        if (hasFallback) selectEl.value = String(fallbackValue);
+    }
+}
+
+/**
+ * ✅ ترتيب أبجدي موحّد للطلاب يُستخدم في كل مكان بالنظام (رصد الدرجات، الطباعة، كشوف
+ * المجموعات، ...) بحيث يكون نفس الترتيب دايمًا مهما كانت الشاشة. لا تستخدم .sort()
+ * مباشرة على قوائم الطلاب في أي مكان جديد - استخدم الدالة دي بدلاً منها.
+ * @param {Array} students
+ * @returns {Array} نفس المصفوفة بعد الترتيب (in-place، زي Array.prototype.sort)
+ */
+function sortStudentsArabic(students) {
+    return students.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ar'));
+}
 
 /** 
  * --- ULTRA ROYAL STORAGE ENGINE (IndexedDB) ---
@@ -449,7 +492,15 @@ const db = {
 
     async load() {
         await StorageEngine.init();
-        const tables = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+        // 🔧 إصلاح: كانت هذه القائمة تفتقد 'staff' و 'shifts'، ما يعني أن بيانات
+        // الموظفين والورديات كانت تُفقد بصمت عند أول فتح للتطبيق من نسخة data.js
+        // على متصفح/جهاز جديد (auto-hydration) وأثناء ترحيل البيانات القديمة.
+        // تُبنى القائمة الآن ديناميكياً من كل الجداول المسجّلة فعلياً في IndexedDB
+        // حتى تشمل تلقائياً أي جدول يُضاف مستقبلاً دون الحاجة لتعديل هذا الكود.
+        const STATIC_TABLES_FALLBACK = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+        const tables = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+            ? Array.from(new Set([...Array.from(StorageEngine.db.objectStoreNames), ...STATIC_TABLES_FALLBACK]))
+            : STATIC_TABLES_FALLBACK;
 
         // 1. Read active grade/group FIRST
         currentGrade = localStorage.getItem('edu_active_grade') || null;
@@ -488,6 +539,13 @@ const db = {
             // Restore grade/group context
             if (initialData.activeGrade) localStorage.setItem('edu_active_grade', initialData.activeGrade);
             if (initialData.activeGroup) localStorage.setItem('edu_active_group', initialData.activeGroup);
+            // 🔧 إصلاح: استعادة كل مفاتيح localStorage الأخرى المحفوظة داخل data.js
+            // (الثيمات، قوالب واتساب، جلسات التصحيح النشطة، إلخ) وليس فقط settings/gradesList
+            if (initialData.ls && typeof initialData.ls === 'object') {
+                Object.entries(initialData.ls).forEach(([k, v]) => {
+                    if (v !== null && v !== undefined) localStorage.setItem(k, String(v));
+                });
+            }
             localStorage.setItem('edu_app_initialized', 'true');
             console.log('Hydration complete. Reloading...');
             setTimeout(() => location.reload(), 300);
@@ -588,10 +646,12 @@ const db = {
         if (modifiedTable) {
             await StorageEngine.save(modifiedTable, this[modifiedTable]);
         } else {
-            // Default: Save all tables including massive students table 
-            const tables = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+            // Default: Save all tables including massive students table
+            const tables = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+                ? Array.from(StorageEngine.db.objectStoreNames)
+                : ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
             for (const table of tables) {
-                await StorageEngine.save(table, this[table]);
+                if (Array.isArray(this[table])) await StorageEngine.save(table, this[table]);
             }
         }
 
@@ -953,36 +1013,56 @@ async function hydrateDatabase(dataBlob) {
     }
 
     // 3. Robust Chunked Table Import
-    const tables = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+    // 🔧 إصلاح جوهري: القائمة كانت ثابتة (hardcoded) في أكثر من مكان بالكود
+    // بدون تزامن بينها؛ أي جدول جديد يُضاف مستقبلاً كان سيُستبعد بصمت من
+    // الاستعادة. تُبنى القائمة الآن من (كل الجداول الموجودة فعلياً في IndexedDB)
+    // ∪ (كل مفتاح في ملف النسخة الاحتياطية نفسه يحتوي مصفوفة) ∪ (قائمة احتياطية ثابتة)
+    const STATIC_FALLBACK_TABLES = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+    const dbTableNames = (StorageEngine.db && StorageEngine.db.objectStoreNames) ? Array.from(StorageEngine.db.objectStoreNames) : [];
+    const backupTableNames = Object.keys(processedData || {}).filter(k => Array.isArray(processedData[k]));
+    const tables = Array.from(new Set([...dbTableNames, ...backupTableNames, ...STATIC_FALLBACK_TABLES]));
     let tablesImported = 0;
     let totalAdded = 0;
     let totalUpdated = 0;
     let totalSkipped = 0;
+    const failedTables = []; // 🔧 لتسجيل أي جدول فشل استيراده دون إيقاف باقي الجداول
 
     showNotification('جاري قراءة البيانات... يرجى الانتظار ولا تغلق المتصفح', 'info');
 
     for (const table of tables) {
-        // Look for the data under multiple naming conventions
-        const dataArray = processedData[table] ||
-            processedData[`edu_${table}`] ||
-            (table === 'dailyTreasuryArchives' ? (processedData.dailyTreasury || processedData.dailyTreasuryArchives) : null) ||
-            (table === 'payments' ? (processedData.studentPayments || processedData.allPayments) : null) ||
-            (table === 'students' && Array.isArray(processedData) ? processedData : null);
+        try {
+            // Look for the data under multiple naming conventions
+            const dataArray = processedData[table] ||
+                processedData[`edu_${table}`] ||
+                (table === 'dailyTreasuryArchives' ? (processedData.dailyTreasury || processedData.dailyTreasuryArchives) : null) ||
+                (table === 'payments' ? (processedData.studentPayments || processedData.allPayments) : null) ||
+                (table === 'students' && Array.isArray(processedData) ? processedData : null);
 
-        if (dataArray && Array.isArray(dataArray) && dataArray.length > 0) {
-            console.log(`⏳ استيراد جدول "${table}"... (${dataArray.length} عنصر)`);
-            const result = await mergeTableWithoutDuplicates(table, dataArray);
-            if (result.added > 0 || result.updated > 0) tablesImported++;
-            totalAdded += result.added;
-            totalUpdated += result.updated;
-            totalSkipped += result.skipped;
-            console.log(`✅ جدول "${table}": +${result.added} جديد, ${result.updated} محدّث, ${result.skipped} تخطي`);
-        } else if (dataArray && Array.isArray(dataArray)) {
-            console.log(`⚠️ جدول "${table}": فارغ (0 عنصر)`);
+            if (dataArray && Array.isArray(dataArray) && dataArray.length > 0) {
+                console.log(`⏳ استيراد جدول "${table}"... (${dataArray.length} عنصر)`);
+                const result = await mergeTableWithoutDuplicates(table, dataArray);
+                if (result.added > 0 || result.updated > 0) tablesImported++;
+                totalAdded += result.added;
+                totalUpdated += result.updated;
+                totalSkipped += result.skipped;
+                console.log(`✅ جدول "${table}": +${result.added} جديد, ${result.updated} محدّث, ${result.skipped} تخطي`);
+            } else if (dataArray && Array.isArray(dataArray)) {
+                console.log(`⚠️ جدول "${table}": فارغ (0 عنصر)`);
+            }
+        } catch (tableError) {
+            // ⭐ الإصلاح الأهم: فشل استيراد جدول واحد (مثلاً بسبب اختلاف نسخة
+            // قاعدة البيانات بين الجهازين) لم يعد يوقف استيراد بقية الجداول.
+            // سابقاً كان أي خطأ هنا يوقف الحلقة بالكامل، فتُفقد كل الجداول التالية
+            // (وهذا يفسر اختفاء الأرشيفات/الاشتراكات وغيرها بعد الاستعادة).
+            console.error(`❌ فشل استيراد جدول "${table}":`, tableError);
+            failedTables.push(table);
         }
     }
 
-    console.log('📊 ملخص الاستيراد:', { tablesImported, totalAdded, totalUpdated, totalSkipped });
+    console.log('📊 ملخص الاستيراد:', { tablesImported, totalAdded, totalUpdated, totalSkipped, failedTables });
+    if (failedTables.length > 0) {
+        showNotification('⚠️ تعذّر استيراد بعض الجداول: ' + failedTables.join(', ') + ' — راجع الـ Console للتفاصيل', 'error');
+    }
 
     // 4. Persistence of Meta & Settings
     const settings = processedData.settings || processedData.edu_master_settings || processedData.edu_settings;
@@ -1590,9 +1670,19 @@ let isLessonCodingActive     = false;
 let isLessonCodingPaused     = false;
 let currentSessionAttendance = [];
 const waTemplates = JSON.parse(localStorage.getItem('edu_wa_templates')) || {
-    welcome: "أهلاً بك يا *[[name]]*! 👋 تم تسجيل حضورك بنجاح. نقاطك الحالية: [[points]] 💎",
-    absence: "نحيطكم علماً بغياب الطالب: *[[name]]* اليوم. يرجى المتابعة.",
-    payment: "تم استلام اشتراك الشهر للطالب: *[[name]]*. شكراً لكم."
+    welcome:
+`السلام عليكم ورحمة الله وبركاته،
+يسرنا إعلامكم بأنه قد تم تسجيل حضور ابنكم/ابنتكم الطالب/ـة *[[name]]* بنجاح اليوم.
+📌 إجمالي نقاط التميز المُجمّعة: [[points]] نقطة 💎
+نتمنى له/ـا حضوراً منتظماً ومستوى دراسياً متميزاً، ونشكر لسيادتكم متابعتكم المستمرة.`,
+    absence:
+`السلام عليكم ورحمة الله وبركاته،
+نحيط سيادتكم علماً بغياب الطالب/ـة *[[name]]* عن الحصة الدراسية اليوم.
+نرجو التكرم بمتابعة سبب الغياب، حرصاً منا على انتظام مستواه/ـا الدراسي وتحقيق أفضل النتائج.`,
+    payment:
+`السلام عليكم ورحمة الله وبركاته،
+يسرنا إفادتكم بأنه قد تم استلام اشتراك هذا الشهر للطالب/ـة *[[name]]* بنجاح.
+شاكرين لسيادتكم حسن تعاونكم وثقتكم الدائمة، ونؤكد حرصنا على تقديم أفضل مستوى تعليمي.`
 };
 
 // --- 1. Global Navigation ---
@@ -1650,7 +1740,7 @@ function showSection(sectionId, btnEl) {
         'receipts': 'وصولات الدفع', 'platform-activation': 'تفعيل كورسات المنصة',
         'employee-platform-sync': 'مزامنة المنصة التعليمية'
     };
-    document.getElementById('page-title').innerText = titles[sectionId] || 'سنتر مصطفى';
+    document.getElementById('page-title').innerText = titles[sectionId] || 'سنتر المصطفى';
 
     if (sectionId === 'shifts') renderShifts();
 
@@ -1662,7 +1752,6 @@ function showSection(sectionId, btnEl) {
         SessionManager.syncGlobals();
         _syncSessionUI();
 
-        startQRScanner();
         renderQuickAttendance();
         renderSessionTable();
         const today = new Date().toISOString().split('T')[0];
@@ -1696,7 +1785,10 @@ function showSection(sectionId, btnEl) {
 }
 
 function stopAllCameraScanners() {
-    [html5QrCode, examScanner, searchScanner, portalScanner, fastGradingScanner].forEach(s => {
+    // html5QrCode (شاشة الحضور) لها طابور تسلسلي خاص لتفادي تعارض التشغيل/الإيقاف
+    stopQRScanner();
+
+    [examScanner, searchScanner, portalScanner, fastGradingScanner].forEach(s => {
         if (s) {
             try {
                 // Robust stop: Check state or just try to stop
@@ -1732,7 +1824,11 @@ function initFollowupSection() {
 
     // Groups of current grade
     const groups = db.groups.filter(g => g.grade == currentGrade);
-    groupSelect.innerHTML = groups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+    rebuildSelectPreservingSelection(
+        groupSelect,
+        () => groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+        currentGroupId
+    );
 }
 
 function initAbsenceManager() {
@@ -1848,6 +1944,7 @@ function startExamScanner() {
     if (!examScanner) {
         examScanner = new Html5Qrcode("exam-reader");
     }
+    if (examScanner.isScanning) return; // شغالة بالفعل — تجنّب فتح جلسة كاميرا مكررة
 
     examScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 },
         (decodedText) => {
@@ -1908,7 +2005,11 @@ function initAbsenceGroupFilter() {
     const select = document.getElementById('absence-group-filter');
     if (select) {
         const groups = db.groups.filter(g => g.grade == currentGrade);
-        select.innerHTML = groups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+        rebuildSelectPreservingSelection(
+            select,
+            () => groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+            currentGroupId
+        );
     }
 }
 
@@ -1938,8 +2039,15 @@ function initFilters() {
     const filter = document.getElementById('filter-group');
     if (filter) {
         const groups = db.groups.filter(g => String(g.grade) === String(currentGrade));
-        filter.innerHTML = '<option value="all">كل المجموعات (الكل)</option>' +
-            groups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+        // ✅ كانت بترجع لـ currentGroupId في كل مرة يتعمل فيها refreshGroupContexts()
+        // (مزامنة/أرشفة خلفية) وبتمسح اختيار المستخدم اليدوي في فلتر شاشة الطلاب.
+        // دلوقتي بتحافظ على نفس الاختيار لو لسه موجود ضمن الخيارات.
+        rebuildSelectPreservingSelection(
+            filter,
+            () => '<option value="all">كل المجموعات (الكل)</option>' +
+                groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+            currentGroupId
+        );
     }
 }
 
@@ -2074,7 +2182,7 @@ async function renderStudents() {
     studentsToRender = paged.data;
     hasMore = paged.hasMore;
 
-    studentsToRender.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+    sortStudentsArabic(studentsToRender);
 
     const groups = {};
     studentsToRender.forEach(s => {
@@ -2114,6 +2222,7 @@ async function renderStudents() {
                     <button class="btn" title="تقرير شامل" style="padding:5px 10px; background:#3b82f6; color:white;" onclick="generateMonthlyReport(${s.id})"><i class="fas fa-file-invoice"></i></button>
                     <button class="btn" title="الملف الشخصي" style="padding:5px 10px;" onclick="viewDetailedProfile(${s.id})"><i class="fas fa-user-graduate"></i></button>
                     <button class="btn" title="تعديل" style="padding:5px 10px; background:var(--accent); color:white;" onclick="editStudent(${s.id})"><i class="fas fa-edit"></i></button>
+                    <button class="btn" title="نقل لمجموعة أخرى" style="padding:5px 10px; background:#8b5cf6; color:white;" onclick="showTransferStudentModal(${s.id})"><i class="fas fa-exchange-alt"></i></button>
                     <button class="btn" title="حذف" style="padding:5px 10px; color:var(--danger);" onclick="deleteStudent(${s.id})"><i class="fas fa-trash"></i></button>
                 </div>
             </td>
@@ -2194,7 +2303,10 @@ function refreshGroupContexts() {
     const portalSelect = document.getElementById('portal-group-select');
     if (portalSelect) {
         const gradeGroups = db.groups.filter(g => g.grade == currentGrade);
-        portalSelect.innerHTML = gradeGroups.map(g => `<option value="${g.id}">${g.name} (${g.time})</option>`).join('') || '<option value="">لا يوجد مجموعات في هذا الصف</option>';
+        rebuildSelectPreservingSelection(
+            portalSelect,
+            () => gradeGroups.map(g => `<option value="${g.id}">${g.name} (${g.time})</option>`).join('') || '<option value="">لا يوجد مجموعات في هذا الصف</option>'
+        );
     }
     initGradeSelects();
     if (typeof initCertificatesSection === 'function') initCertificatesSection();
@@ -2274,6 +2386,7 @@ function renderGroupStudents() {
             <td>
                 <div style="display:flex; gap:8px;">
                     <button class="btn" style="padding:4px 8px; font-size:0.8rem;" onclick="viewDetailedProfile(${s.id})"><i class="fas fa-user"></i></button>
+                    <button class="btn" title="نقل لمجموعة أخرى" style="padding:4px 8px; font-size:0.8rem; background:#8b5cf6; color:white;" onclick="showTransferStudentModal(${s.id})"><i class="fas fa-exchange-alt"></i></button>
                     <button class="btn" style="padding:4px 8px; font-size:0.8rem; color:var(--danger);" onclick="removeStudentFromGroup(${s.id})"><i class="fas fa-user-minus"></i></button>
                 </div>
             </td>
@@ -2788,7 +2901,13 @@ function sendAbsenceWhatsApp(id) {
     const s = db.students.find(x => x.id === id);
     if (!s) return;
 
-    const message = `السلام عليكم ورحمة الله، والد الطالب ${s.name}، نحيط سيادتكم علماً بأن الطالب لم يحضر اليوم.`;
+    const message = buildFormalParentMessage({
+        noticeType: 'إشعار غياب',
+        bodyLines: [
+            `نحيط سيادتكم علماً بأن الطالب/ـة *${s.name}* لم يحضر/تحضر الحصة الدراسية اليوم الموافق ${new Date().toLocaleDateString('ar-EG')}.`,
+            `نرجو التكرم بمتابعة سبب الغياب، وموافاتنا بأي عذر إن وجد، حرصاً منا على انتظام مستواه/ـا الدراسي.`
+        ]
+    });
     const url = `https://wa.me/2${s.parentPhone}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
     showNotification('تم فتح واتساب للإرسال المباشر');
@@ -2797,6 +2916,7 @@ function sendAbsenceWhatsApp(id) {
 function startSearchScanner() {
     toggleModal('search-scanner-modal', true);
     if (!searchScanner) searchScanner = new Html5Qrcode("search-reader");
+    if (searchScanner.isScanning) return; // شغالة بالفعل — تجنّب فتح جلسة كاميرا مكررة
     searchScanner.start(
         { facingMode: "environment" },
         { fps: 20, qrbox: { width: 300, height: 200 } },
@@ -2836,10 +2956,37 @@ function stopSearchScanner() {
     }
 }
 
+// ── طابور تسلسلي لعمليات تشغيل/إيقاف الكاميرا ──
+// يضمن عدم فتح جلسة كاميرا جديدة قبل ما تُغلق القديمة فعلياً
+// (كان هذا يسبب تراكم جلسات كاميرا مفتوحة عند التنقل السريع
+//  للدخول والخروج من شاشة الحضور، وهو ما يسبب تهنيج التطبيق
+//  بعد استخدام طويل خصوصاً داخل تطبيق APK/WebView)
+let _qrScannerQueue = Promise.resolve();
+
 function startQRScanner() {
-    if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
-    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, processScan)
-        .catch(err => console.error("Scanner failed to start", err));
+    _qrScannerQueue = _qrScannerQueue.then(async () => {
+        if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+        if (html5QrCode.isScanning) return; // شغالة بالفعل — تجنّب فتح جلسة كاميرا مكررة
+        try {
+            await html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, processScan);
+        } catch (err) {
+            console.error("Scanner failed to start", err);
+        }
+    }).catch(() => {});
+    return _qrScannerQueue;
+}
+
+function stopQRScanner() {
+    _qrScannerQueue = _qrScannerQueue.then(async () => {
+        if (html5QrCode && html5QrCode.isScanning) {
+            try {
+                await html5QrCode.stop();
+                const reader = document.getElementById('reader');
+                if (reader) reader.style.display = 'none';
+            } catch (e) {}
+        }
+    }).catch(() => {});
+    return _qrScannerQueue;
 }
 
 // --- NEW: Attendance History Functions ---
@@ -2864,7 +3011,7 @@ function toggleAttendanceView(view) {
         scannerBtn.style.color = 'var(--text-main)';
         historyBtn.style.background = 'var(--primary)';
         historyBtn.style.color = 'white';
-        if (html5QrCode) html5QrCode.stop().catch(() => { });
+        stopQRScanner();
         renderHistoryByDate();
     }
 }
@@ -2873,8 +3020,12 @@ function initHistoryGroups() {
     const select = document.getElementById('history-group-select');
     if (select) {
         const groups = db.groups.filter(g => g.grade == currentGrade);
-        select.innerHTML = '<option value="all">كل المجموعات</option>' +
-            groups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+        rebuildSelectPreservingSelection(
+            select,
+            () => '<option value="all">كل المجموعات</option>' +
+                groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+            currentGroupId
+        );
     }
 }
 
@@ -3146,7 +3297,9 @@ function startJointSession() {
         document.getElementById('portal-scanner-container').style.display = 'grid';
         renderPortalAttendance();
         if (!portalScanner) portalScanner = new Html5Qrcode("portal-reader");
-        portalScanner.start({ facingMode: "environment" }, { fps: 25, qrbox: { width: 350, height: 250 } }, processScan);
+        if (!portalScanner.isScanning) {
+            portalScanner.start({ facingMode: "environment" }, { fps: 25, qrbox: { width: 350, height: 250 } }, processScan).catch(() => {});
+        }
     }
 }
 
@@ -3176,7 +3329,9 @@ function startPortalSession(groupId) {
 
     renderPortalAttendance();
     if (!portalScanner) portalScanner = new Html5Qrcode("portal-reader");
-    portalScanner.start({ facingMode: "environment" }, { fps: 25, qrbox: { width: 350, height: 250 } }, processScan);
+    if (!portalScanner.isScanning) {
+        portalScanner.start({ facingMode: "environment" }, { fps: 25, qrbox: { width: 350, height: 250 } }, processScan).catch(() => {});
+    }
 }
 
 function renderPortalAttendance() {
@@ -3295,7 +3450,10 @@ function toggleMonthlyPayment(studentId) {
         addToQueue(studentId, 'payment');
         showNotification('تم تسجيل الدفع بنجاح ✅');
     }
-    db.save();
+    // ⚡ إصلاح أداء: حفظ جدول المدفوعات فقط بدل حفظ كل الجداول (بما فيها آلاف الطلاب)
+    // في كل عملية دفع — كان ده بيسبب بطء/تجمّد شديد وأحياناً "ريفرش" مفاجئ للصفحة
+    // على الأجهزة اللي فيها عدد كبير من الطلاب.
+    db.save('payments');
     renderPortalAttendance();
     renderSubscriptionTracker();
     renderFinances();
@@ -4164,7 +4322,7 @@ function initCertificatesSection() {
         String(s.grade) === String(currentGrade) &&
         String(s.groupId) === String(currentGroupId)
     );
-    const sortedStudents = groupStudents.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+    const sortedStudents = sortStudentsArabic(groupStudents);
 
     select.innerHTML = '<option value="">-- اختر اسم الطالب --</option>' +
         sortedStudents.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
@@ -4188,8 +4346,14 @@ function sendCongratulationWA() {
     const s = db.students.find(x => x.id == studentId);
     if (!s) return;
 
-    // User requested message: "ابنكم متفوق وهذه شهادة منا له"
-    const text = `السلام عليكم.. يَسرنا إعلامكم أن ابنكم الطالب المتميز *${s.name}* قد حقق تفوقاً باهراً في دروسه، وهذه شهادة تقدير وتفوق منا له تقديراً لمجهوده الرائع 🎉🏆. نسأل الله له دوام التوفيق والنجاح.`;
+    // رسالة تهنئة بمناسبة التفوق الدراسي — بنفس الهوية اللغوية الموحّدة للمنصة
+    const text = buildFormalParentMessage({
+        noticeType: 'تهنئة بالتفوق الدراسي',
+        bodyLines: [
+            `يسعدنا أن نُبشّر سيادتكم بأن ابنكم/ابنتكم الطالب/ـة المتميز/ـة *${s.name}* قد حقق/حققت تفوقاً ملحوظاً ومستوى دراسياً رائعاً 🏆.`,
+            `ومرفق لسيادتكم شهادة تقدير تعبيراً عن مجهوده/ـا المتميز، وتحفيزاً له/ـا على الاستمرار والتفوق 🎉.`
+        ]
+    });
 
     window.open(`https://wa.me/2${s.parentPhone}?text=${encodeURIComponent(text)}`, '_blank');
 }
@@ -4262,7 +4426,13 @@ async function sendNewCertificate(recipient) {
                 await navigator.clipboard.write([item]);
 
                 const phone = recipient === 'parent' ? s.parentPhone : s.phone;
-                const msg = `ألف مبروك للطالب المتميز *${s.name}* بمناسبة تفوقه الأكاديمي! 🏆\nمرفق لسيادتكم شهادة تقدير من منصة *سنتر مصطفى*.\n_(يمكنك ضغط Ctrl+V في المحادثة لإرسال صورة الشهادة فوراً)_`;
+                const msg = buildFormalParentMessage({
+                    noticeType: 'شهادة تقدير',
+                    bodyLines: [
+                        `يسرنا مشاركتكم هذا الإنجاز؛ حيث حصل ابنكم/ابنتكم الطالب/ـة *${s.name}* على شهادة تقدير تقديراً لتفوقه/ـا الأكاديمي 🏆.`,
+                        `_(مرفق صورة الشهادة — يمكنكم لصقها في المحادثة مباشرةً بالضغط على Ctrl+V)_`
+                    ]
+                });
 
                 showNotification('✅ تم نسخ الشهادة للحافظة! يمكنك الآن الضغط على Ctrl+V في واتساب', 'success');
 
@@ -4320,8 +4490,9 @@ function addToQueue(studentId, type, customText = null) {
     const s = db.students.find(x => x.id === studentId);
     if (!s) return;
 
-    let text = customText || waTemplates[type] || "تنبيه من سنتر مصطفى - [[name]]";
+    let text = customText || waTemplates[type] || "تنبيه من سنتر المصطفى - [[name]]";
     text = text.replace(/\[\[name\]\]/g, s.name).replace(/\[\[points\]\]/g, s.points || 0);
+    text += getTeacherSignatureLine();
 
     db.waQueue.push({
         id: Date.now(),
@@ -4330,7 +4501,8 @@ function addToQueue(studentId, type, customText = null) {
         text,
         type
     });
-    db.save();
+    // ⚡ إصلاح أداء: حفظ جدول رسائل الواتساب فقط بدل كل الجداول
+    db.save('waQueue');
     if (document.getElementById('whatsapp-section').style.display === 'block') renderWAQueue();
 }
 
@@ -4472,6 +4644,7 @@ function exitPortalMode() {
 // --- 7. Fast Grading AI Engine ---
 // fastGradingScanner already declared in global state section above
 let currentFastStudent = null;
+let currentGradingMode = 'barcode'; // 'barcode' | 'manual' - آخر وضع رصد استخدمه المستخدم
 
 function initFastGrading() {
     const examSelect = document.getElementById('fast-exam-select');
@@ -4485,9 +4658,13 @@ function initFastGrading() {
 
     // Filter Groups by current grade
     const groups = db.groups.filter(g => String(g.grade) === String(currentGrade));
-    groupSelect.innerHTML = '<option value="">-- اختر المجموعة --</option>' +
-        '<option value="all">كل مجموعات المرحلة (يوم جماعي)</option>' +
-        groups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+    rebuildSelectPreservingSelection(
+        groupSelect,
+        () => '<option value="">-- اختر المجموعة --</option>' +
+            '<option value="all">كل مجموعات المرحلة (يوم جماعي)</option>' +
+            groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+        currentGroupId
+    );
 
     // AUTO SELECT LAST EXAM if none selected
     if (!examSelect.value && exams.length > 0) {
@@ -4510,11 +4687,79 @@ function initFastGrading() {
     renderFastHistory();
     renderFastPendingList();
 
-    if (!fastGradingScanner) fastGradingScanner = new Html5Qrcode("fast-reader");
-    fastGradingScanner.start({ facingMode: "environment" }, { fps: 20, qrbox: 250 }, processFastScan).catch(err => {
-        console.error("Scanner failed", err);
-        showNotification("تعذر تشغيل الكاميرا - يرجى التأكد من الصلاحيات", "error");
-    });
+    // ✅ جهّز إعدادات وضع "الرصد اليدوي" كمان بحيث تكون جاهزة فورًا لما المستخدم يختارها
+    initManualGradingSetup();
+
+    // اعرض نفس وضع الرصد اللي كان مختار قبل كده (باركود / يدوي)
+    applyGradingModeUI(currentGradingMode);
+
+    if (currentGradingMode === 'barcode') {
+        if (!fastGradingScanner) fastGradingScanner = new Html5Qrcode("fast-reader");
+        if (!fastGradingScanner.isScanning) {
+            fastGradingScanner.start({ facingMode: "environment" }, { fps: 20, qrbox: 250 }, processFastScan).catch(err => {
+                console.error("Scanner failed", err);
+                showNotification("تعذر تشغيل الكاميرا - يرجى التأكد من الصلاحيات", "error");
+            });
+        }
+
+        // ✅ خطوة 1: المؤشر داخل حقل الباركود تلقائيًا عند فتح الصفحة - بدون أي تدخل بالماوس
+        focusBarcodeGradingInput();
+    }
+}
+
+/**
+ * يبدّل عرض البانل (باركود / يدوي) وشكل الأزرار بس - بدون تشغيل/إيقاف الكاميرا.
+ * مستخدمة داخليًا من initFastGrading (أول فتح للصفحة) ومن switchGradingMode (تبديل يدوي من المستخدم).
+ */
+function applyGradingModeUI(mode) {
+    const barcodePanel = document.getElementById('grading-mode-barcode-panel');
+    const manualPanel = document.getElementById('grading-mode-manual-panel');
+    const btnBarcode = document.getElementById('grading-mode-btn-barcode');
+    const btnManual = document.getElementById('grading-mode-btn-manual');
+
+    const isManual = mode === 'manual';
+    if (barcodePanel) barcodePanel.style.display = isManual ? 'none' : 'block';
+    if (manualPanel) manualPanel.style.display = isManual ? 'block' : 'none';
+
+    if (btnBarcode) {
+        btnBarcode.style.background = isManual ? 'var(--bg-light)' : '';
+        btnBarcode.style.color = isManual ? 'var(--text-main)' : '';
+    }
+    if (btnManual) {
+        btnManual.style.background = isManual ? '' : 'var(--bg-light)';
+        btnManual.style.color = isManual ? '' : 'var(--text-main)';
+    }
+}
+
+/** يُستدعى من زرّي "الرصد السريع بالباركود" / "الرصد اليدوي" أعلى الصفحة */
+function switchGradingMode(mode) {
+    if (mode === currentGradingMode) return;
+    currentGradingMode = mode;
+    applyGradingModeUI(mode);
+
+    if (mode === 'manual') {
+        // إيقاف الكاميرا عشان توفر الموارد ومايحصلش تعارض بين الوضعين
+        if (fastGradingScanner) {
+            try { fastGradingScanner.stop().catch(() => { }); } catch (e) { }
+        }
+        initManualGradingSetup();
+    } else {
+        if (!fastGradingScanner) fastGradingScanner = new Html5Qrcode("fast-reader");
+        if (!fastGradingScanner.isScanning) {
+            fastGradingScanner.start({ facingMode: "environment" }, { fps: 20, qrbox: 250 }, processFastScan).catch(err => {
+                console.error("Scanner failed", err);
+            });
+        }
+        focusBarcodeGradingInput();
+    }
+}
+
+/** يعيد التركيز لحقل ماسح الباركود بعد أي عملية حفظ، عشان الموظف يكمل شغله باللوحة والماسح فقط */
+function focusBarcodeGradingInput() {
+    setTimeout(() => {
+        const barcodeInput = document.getElementById('barcode-grading-entry');
+        if (barcodeInput) barcodeInput.focus();
+    }, 150);
 }
 
 function markRemainingAsExamAbsent() {
@@ -4575,7 +4820,12 @@ function processFastScan(token) {
     // 2. Prevent Re-scan flicker
     if (currentFastStudent && currentFastStudent.id === student.id) return;
 
-    // 3. Grade Check
+    // 3. ✅ متطلب 4: لو فيه درجة مكتوبة للطالب الحالي ولسه ما اتحفظتش، احفظها الأول تلقائيًا
+    //    قبل الانتقال للطالب الجديد. لو الدرجة المكتوبة غير صحيحة، امنع الانتقال (متطلب 7)
+    //    لحد ما المستخدم يصلّحها، بدل ما نضيّع الدرجة أو نتجاهل الخطأ.
+    if (!tryAutoSavePendingFastMark()) return;
+
+    // 4. Grade Check
     if (String(student.grade) !== String(currentGrade)) {
         const studentGradeObj = gradesList.find(g => g.id == student.grade);
         playSound('error');
@@ -4583,7 +4833,7 @@ function processFastScan(token) {
         return;
     }
 
-    // 4. Group Warning (Relaxed to warning like attendance)
+    // 5. Group Warning (Relaxed to warning like attendance)
     const rawSessionId = activePortalGroupId || currentGroupId;
     let isGroupMatched = false;
     if (String(rawSessionId).startsWith('joint:')) {
@@ -4617,9 +4867,9 @@ function processFastScan(token) {
             </div>
             
             <button class="btn btn-primary" style="width:100%; height:60px; font-size:1.2rem; border-radius:15px; margin-top:1rem;" onclick="submitFastGrade()">
-                رصد الدرجة الآن <i class="fas fa-check-double"></i>
+                رصد الدرجة الآن (اختياري - Enter كفاية) <i class="fas fa-check-double"></i>
             </button>
-            <p style="margin-top:1rem; font-size:0.8rem; color:var(--text-muted);">أو استخدم ماسح الباركود للانتقال للطالب التالي</p>
+            <p style="margin-top:1rem; font-size:0.8rem; color:var(--text-muted);">أو امسح باركود الطالب التالي مباشرة للحفظ التلقائي والانتقال</p>
         </div>
     `;
 
@@ -4629,7 +4879,38 @@ function processFastScan(token) {
     }, 150);
 
     playSound('success');
-    showNotification(`تم التعرف على: ${student.name}`);
+    showNotification(`تم التعرف على: ${student.name}`, 'success', 1000);
+}
+
+/**
+ * ✅ متطلب 4 و 7: يحفظ درجة الطالب الحالي تلقائيًا لو فيه قيمة مكتوبة في حقل الدرجة
+ * قبل الانتقال لطالب جديد (سواء عن طريق مسح باركود أو زر "رصد الدرجة الآن").
+ * @returns {boolean} true = مفيش مشكلة، تقدر تكمل/تنتقل. false = فيه درجة غير صحيحة، امنع الانتقال.
+ */
+function tryAutoSavePendingFastMark() {
+    const inputEl = document.getElementById('fast-mark-input');
+    if (!currentFastStudent || !inputEl) return true; // مفيش طالب محمّل حاليًا، تقدر تكمل عادي
+
+    const rawVal = inputEl.value.trim();
+    if (!rawVal) return true; // مفيش درجة مكتوبة أصلاً، مفيش حاجة نحفظها
+
+    const examId = document.getElementById('fast-exam-select').value;
+    if (!examId) {
+        showNotification('برجاء اختيار الامتحان أولاً', 'error');
+        return false;
+    }
+
+    const mark = parseFloat(rawVal);
+    if (isNaN(mark)) {
+        // ✅ متطلب 7: خطأ واضح + عدم الانتقال حتى يتم حل المشكلة
+        showNotification(`⚠️ الدرجة المكتوبة لـ ${currentFastStudent.name} غير صحيحة - صحّحها أو امسحها قبل المتابعة`, 'error');
+        inputEl.focus();
+        inputEl.select();
+        return false;
+    }
+
+    processAndSaveGrade(currentFastStudent, examId, mark);
+    return true;
 }
 
 function updateFastExamMax() {
@@ -4664,7 +4945,13 @@ function submitFastGrade() {
     if (!rawVal) return showNotification('يرجى إدخال درجة الطالب', 'error');
 
     const mark = parseFloat(rawVal);
-    if (isNaN(mark)) return showNotification('يرجى إدخال درجة صحيحة', 'error');
+    // ✅ متطلب 7: خطأ واضح وعدم الانتقال للطالب التالي حتى يتم تصحيح الدرجة
+    if (isNaN(mark)) {
+        showNotification('يرجى إدخال درجة صحيحة', 'error');
+        inputEl.focus();
+        inputEl.select();
+        return;
+    }
 
     processAndSaveGrade(currentFastStudent, examId, mark);
 
@@ -4675,16 +4962,22 @@ function submitFastGrade() {
     document.getElementById('fast-student-info').innerHTML = `
         <div style="text-align: center; color: var(--accent); padding-top: 5rem;">
             <i class="fas fa-qrcode" style="font-size: 4rem; display: block; margin-bottom: 1rem; opacity: 0.3;"></i>
-            <p>تم الحفظ.. وجه الكاميرا أو استخدم المسح لورقة الطالب التالي...</p>
+            <p>تم الحفظ.. جاهز لمسح باركود الطالب التالي فورًا...</p>
         </div>
     `;
     updateDashboardStats();
+
+    // ✅ متطلب 8: رجّع المؤشر لحقل الباركود عشان الموظف يكمل بدون ما يلمس الماوس
+    focusBarcodeGradingInput();
 }
 
-function processAndSaveGrade(studentObj, examId, mark) {
+function processAndSaveGrade(studentObj, examId, mark, maxMarksOverride) {
     const exam = db.exams.find(e => e.id == examId);
-    const maxMarksInput = document.getElementById('fast-max-marks');
-    const currentMax = maxMarksInput ? parseFloat(maxMarksInput.value) : (exam ? exam.maxMarks : 100);
+    let currentMax = maxMarksOverride;
+    if (currentMax == null) {
+        const maxMarksInput = document.getElementById('fast-max-marks');
+        currentMax = maxMarksInput ? parseFloat(maxMarksInput.value) : (exam ? exam.maxMarks : 100);
+    }
     if (exam && exam.maxMarks !== currentMax) {
         exam.maxMarks = currentMax;
     }
@@ -4708,9 +5001,269 @@ function processAndSaveGrade(studentObj, examId, mark) {
     db.save();
     db.save('students'); // FIXED: Ensure student points update is persisted
 
-    showNotification(`تم رصد ${mark} لـ ${studentObj.name} ✅`, 'success');
+    // ✅ متطلب 6: إشعار نجاح قصير (ثانية واحدة) عشان مايوقفش سير العمل
+    showNotification(`تم رصد ${mark} لـ ${studentObj.name} ✅`, 'success', 1000);
     renderFastHistory();
     renderFastPendingList();
+}
+
+
+// ============================================================
+//  8. الرصد اليدوي بلوحة المفاتيح (Manual Keyboard Grading)
+//  وضع بديل للرصد بالباركود: يختار الموظف مجموعة + امتحان + درجة نهائية،
+//  فتظهر قائمة الطلاب مرتبة أبجديًا (نفس ترتيب الطباعة والكشوف)، ويرصد
+//  كل درجة بالضغط على Enter فقط بدون أي استخدام للماوس.
+// ============================================================
+let manualGradingStudents = []; // الطلاب المعروضين في جلسة الرصد اليدوي الحالية (مرتبين أبجديًا)
+
+/** يجهّز قوائم المجموعة/الامتحان الخاصة بوضع الرصد اليدوي */
+function initManualGradingSetup() {
+    const groupSelect = document.getElementById('manual-grade-group-select');
+    const examSelect = document.getElementById('manual-grade-exam-select');
+    if (!groupSelect || !examSelect) return;
+
+    const groups = db.groups.filter(g => String(g.grade) === String(currentGrade));
+    rebuildSelectPreservingSelection(
+        groupSelect,
+        () => '<option value="">-- اختر المجموعة --</option>' +
+            groups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+        currentGroupId
+    );
+
+    const exams = db.exams.filter(e => String(e.grade) === String(currentGrade));
+    rebuildSelectPreservingSelection(
+        examSelect,
+        () => '<option value="">-- اختر الامتحان --</option>' +
+            exams.map(e => `<option value="${e.id}">${e.title} (درجة: ${e.maxMarks})</option>`).join('')
+    );
+
+    // لو فيه امتحان مختار بالفعل في وضع الباركود، خليه نفس الاختيار الافتراضي هنا
+    const fastExamVal = document.getElementById('fast-exam-select')?.value;
+    if (fastExamVal && !examSelect.value) examSelect.value = fastExamVal;
+
+    // مزامنة الدرجة النهائية تلقائيًا مع الامتحان المختار
+    examSelect.onchange = () => {
+        const exam = db.exams.find(e => e.id == examSelect.value);
+        const maxInput = document.getElementById('manual-grade-max-marks');
+        if (exam && maxInput) maxInput.value = exam.maxMarks;
+    };
+    if (examSelect.value) examSelect.onchange();
+}
+
+/** رجوع لشاشة الإعداد (تغيير مجموعة/امتحان) بدون فقد أي درجات محفوظة بالفعل */
+function exitManualGrading() {
+    const listWrap = document.getElementById('manual-grading-list-wrap');
+    const setup = document.getElementById('manual-grading-setup');
+    if (listWrap) listWrap.style.display = 'none';
+    if (setup) setup.style.display = 'block';
+}
+
+/** ✅ متطلب 1+2+3: بعد اختيار المجموعة/الامتحان/الدرجة النهائية، اعرض كل الطلاب مرتبين أبجديًا */
+function startManualGrading() {
+    const groupId = document.getElementById('manual-grade-group-select').value;
+    const examId = document.getElementById('manual-grade-exam-select').value;
+    const maxMarks = parseFloat(document.getElementById('manual-grade-max-marks').value);
+
+    if (!groupId) return showNotification('برجاء اختيار المجموعة أولاً', 'error');
+    if (!examId) return showNotification('برجاء اختيار الامتحان أولاً', 'error');
+    if (!maxMarks || maxMarks <= 0) return showNotification('برجاء إدخال الدرجة النهائية بشكل صحيح', 'error');
+
+    const exam = db.exams.find(e => e.id == examId);
+    if (exam) exam.maxMarks = maxMarks; // مزامنة الدرجة النهائية فور بدء الجلسة
+
+    const groupObj = db.groups.find(g => String(g.id) === String(groupId));
+    const groupStudents = db.students.filter(s =>
+        String(s.groupId) === String(groupId) && String(s.grade) === String(currentGrade)
+    );
+
+    if (groupStudents.length === 0) {
+        showNotification('لا يوجد طلاب في هذه المجموعة', 'warning');
+        return;
+    }
+
+    // ✅ متطلب 3: نفس دالة الترتيب الأبجدي المستخدمة في كل شاشات النظام والطباعة
+    manualGradingStudents = sortStudentsArabic([...groupStudents]);
+
+    // اجلب أي درجات محفوظة مسبقًا لنفس الامتحان عشان نعرضها جاهزة (تعديل بدل ما تتفقد)
+    const scoreMap = {};
+    db.scores.filter(sc => sc.examId == examId).forEach(sc => { scoreMap[sc.studentId] = sc.mark; });
+
+    const listBody = document.getElementById('manual-grading-list-body');
+    listBody.innerHTML = manualGradingStudents.map((s, idx) => {
+        const existing = scoreMap[s.id];
+        const isAbsent = existing === -1;
+        const displayVal = (existing != null && !isAbsent) ? existing : '';
+        return `
+        <tr data-manual-student-id="${s.id}" style="${isAbsent ? 'background:rgba(239,68,68,0.08);' : (existing != null ? 'background:rgba(16,185,129,0.06);' : '')}">
+            <td>${idx + 1}</td>
+            <td style="text-align:right; font-weight:700;">
+                ${s.name}
+                <span class="manual-absent-tag" style="display:${isAbsent ? 'inline' : 'none'}; color:var(--danger); font-weight:700; margin-right:8px;">(غائب)</span>
+            </td>
+            <td>
+                <input type="number" class="form-input manual-mark-input" data-index="${idx}" data-student-id="${s.id}"
+                    data-empty-confirms="0" value="${displayVal}"
+                    style="text-align:center; font-weight:700;"
+                    onkeydown="handleManualMarkKeydown(event, ${idx})">
+            </td>
+            <td class="manual-status-cell">${
+                isAbsent
+                    ? '<span style="color:var(--danger); font-weight:700;"><i class="fas fa-user-times"></i> غائب</span>'
+                    : (existing != null
+                        ? '<span style="color:var(--accent); font-weight:700;"><i class="fas fa-check-circle"></i> تم</span>'
+                        : '<span style="color:var(--text-muted);">--</span>')
+            }</td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('manual-grading-title').innerText =
+        `رصد: ${exam ? exam.title : ''} — ${groupObj ? groupObj.name : ''} (${manualGradingStudents.length} طالب)`;
+
+    document.getElementById('manual-grading-setup').style.display = 'none';
+    document.getElementById('manual-grading-list-wrap').style.display = 'block';
+
+    // خلي وضع الباركود (والتاريخ/المتبقين تحت) متزامن مع نفس الامتحان/المجموعة المختارة
+    const fastExamSelect = document.getElementById('fast-exam-select');
+    const fastGroupSelect = document.getElementById('fast-group-select');
+    if (fastExamSelect) { fastExamSelect.value = examId; }
+    if (fastGroupSelect) { fastGroupSelect.value = groupId; }
+    renderFastHistory();
+    renderFastPendingList();
+
+    // ✅ متطلب 2+10: المؤشر يروح تلقائيًا لأول طالب في القائمة - بدون أي لمس للماوس
+    setTimeout(() => {
+        const firstInput = document.querySelector('.manual-mark-input[data-index="0"]');
+        if (firstInput) { firstInput.focus(); firstInput.select(); }
+    }, 100);
+
+    showNotification(`▶️ بدأت جلسة الرصد اليدوي لـ ${manualGradingStudents.length} طالب`, 'success', 1500);
+}
+
+/**
+ * ✅ متطلب 5+6+7: التعامل مع الضغط على Enter داخل حقل درجة أي طالب:
+ *  - درجة صحيحة  → تُحفظ فورًا وينتقل المؤشر للطالب التالي.
+ *  - فاضي (Enter أول مرة) → تخطي مؤقت للطالب التالي بدون تسجيل غياب بعد.
+ *  - فاضي (Enter تاني بدون كتابة حاجة) → تأكيد متعمد: يتسجل "غائب" وينتقل للتالي.
+ *  - قيمة غير صحيحة (مش رقم / خارج النطاق) → خطأ واضح وعدم الانتقال حتى يتم التصحيح.
+ */
+function handleManualMarkKeydown(e, index) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+
+    const input = e.target;
+    const rawVal = input.value.trim();
+    const studentId = input.dataset.studentId;
+    const student = manualGradingStudents.find(s => String(s.id) === String(studentId));
+    if (!student) return;
+
+    const examId = document.getElementById('manual-grade-exam-select').value;
+    const maxMarks = parseFloat(document.getElementById('manual-grade-max-marks').value) || 100;
+
+    // --- حالة الحقل الفارغ (غياب محتمل) ---
+    if (rawVal === '') {
+        const confirms = parseInt(input.dataset.emptyConfirms || '0', 10);
+        if (confirms === 0) {
+            // أول Enter وهو فاضي: مجرد تخطي مؤقت، لسه معتبرينه لم يُرصد
+            input.dataset.emptyConfirms = '1';
+            moveToNextManualInput(index);
+            return;
+        }
+        // ✅ متطلب 7: Enter تاني بدون كتابة درجة = تأكيد متعمد أنه غائب
+        saveManualAbsence(student, examId, index);
+        moveToNextManualInput(index);
+        return;
+    }
+
+    // --- حالة كتابة درجة ---
+    const mark = parseFloat(rawVal);
+    if (isNaN(mark)) {
+        // ✅ متطلب 7: خطأ واضح وعدم الانتقال حتى يتم حل المشكلة
+        showNotification('يرجى إدخال درجة صحيحة، أو اترك الحقل فارغًا لو الطالب غائب', 'error');
+        input.focus();
+        input.select();
+        return;
+    }
+    if (mark < 0 || mark > maxMarks) {
+        showNotification(`الدرجة يجب أن تكون بين 0 و ${maxMarks}`, 'error');
+        input.focus();
+        input.select();
+        return;
+    }
+
+    input.dataset.emptyConfirms = '0';
+    processAndSaveGrade(student, examId, mark, maxMarks); // بيعمل toast قصير (1 ثانية) بنفسه
+    updateManualRowVisual(student.id, mark);
+    moveToNextManualInput(index);
+}
+
+/** يسجّل الطالب غائبًا (بدون منح نقاط) - نفس منطق التسجيل المستخدم في باقي الشاشات */
+function saveManualAbsence(student, examId, index) {
+    const existingIdx = db.scores.findIndex(sc => sc.examId == examId && sc.studentId == student.id);
+    if (existingIdx > -1) {
+        db.scores[existingIdx].mark = -1;
+        db.scores[existingIdx].date = new Date().toISOString();
+    } else {
+        db.scores.push({
+            id: Date.now() + Math.random(),
+            examId: parseInt(examId),
+            studentId: student.id,
+            mark: -1,
+            date: new Date().toISOString()
+        });
+    }
+    db.save();
+    updateManualRowVisual(student.id, -1);
+    showNotification(`تم تسجيل ${student.name} غائبًا`, 'warning', 1000);
+    renderFastHistory();
+    renderFastPendingList();
+}
+
+/** ✅ متطلب 8: تمييز بصري واضح للطالب الغائب أو المرصود بالفعل */
+function updateManualRowVisual(studentId, mark) {
+    const row = document.querySelector(`#manual-grading-list-body tr[data-manual-student-id="${studentId}"]`);
+    if (!row) return;
+    const absentTag = row.querySelector('.manual-absent-tag');
+    const statusCell = row.querySelector('.manual-status-cell');
+    const isAbsent = mark === -1;
+
+    row.style.background = isAbsent ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.06)';
+    if (absentTag) absentTag.style.display = isAbsent ? 'inline' : 'none';
+    if (statusCell) {
+        statusCell.innerHTML = isAbsent
+            ? '<span style="color:var(--danger); font-weight:700;"><i class="fas fa-user-times"></i> غائب</span>'
+            : '<span style="color:var(--accent); font-weight:700;"><i class="fas fa-check-circle"></i> تم</span>';
+    }
+}
+
+/** ينتقل لحقل الطالب التالي في القائمة، أو ينهي الجلسة لو كان آخر طالب */
+function moveToNextManualInput(currentIndex) {
+    const next = document.querySelector(`.manual-mark-input[data-index="${currentIndex + 1}"]`);
+    if (next) {
+        next.focus();
+        next.select();
+    } else {
+        finishManualGrading();
+    }
+}
+
+/** ✅ متطلب 9: عند الانتهاء من آخر طالب في القائمة، اعرض رسالة نجاح توضح اكتمال الرصد */
+function finishManualGrading() {
+    const examId = document.getElementById('manual-grade-exam-select').value;
+    const studentIds = manualGradingStudents.map(s => s.id);
+    const examScores = db.scores.filter(sc => sc.examId == examId && studentIds.includes(sc.studentId));
+    const totalCount = manualGradingStudents.length;
+    const absentCount = examScores.filter(sc => sc.mark === -1).length;
+    const gradedCount = examScores.length - absentCount;
+
+    db.save();
+    updateDashboardStats();
+    showNotification(
+        `✅ تم الانتهاء من رصد المجموعة بالكامل: ${gradedCount} درجة، ${absentCount} غياب، من إجمالي ${totalCount} طالب`,
+        'success', 3500
+    );
+
+    // رجوع تلقائي لشاشة الإعداد بعد لحظة، عشان يقدر يبدأ مجموعة جديدة فورًا بدون ماوس
+    setTimeout(() => { exitManualGrading(); }, 1800);
 }
 
 
@@ -5513,10 +6066,27 @@ function searchStudentSmart(query) {
     }
 
     const matchedStudents = db.students.filter(s => {
-        return String(s.grade) === String(activeGrade) &&
+        // ✅ إصلاح: توحيد صيغة الصف قبل المقارنة (قديم/systemCode/platformCode)
+        // كانت المقارنة النصية المباشرة بتفشل لو الصف مخزّن بصيغة مختلفة عن activeGrade
+        // رغم إن المجموعة (groupId) هي نفسها المطابقة فعلياً، فبنعتمد عليها كمرجع أساسي.
+        const gradeMatches = (typeof normalizeGrade === 'function')
+            ? normalizeGrade(s.grade) === normalizeGrade(activeGrade)
+            : String(s.grade) === String(activeGrade);
+
+        return gradeMatches &&
             String(s.groupId) === String(activeGroup) &&
             (normalize(s.name).includes(q) || String(s.qrCode).startsWith(query));
     }).slice(0, 5);
+
+    // ✅ Fallback: لو مفيش نتائج بمطابقة الصف، جرّب المطابقة بالمجموعة فقط
+    // (المجموعة أصلاً بتحدد الصف، فمفيش داعي نمنع النتيجة بسبب اختلاف صيغة تخزين الصف)
+    if (matchedStudents.length === 0) {
+        const fallbackMatches = db.students.filter(s => {
+            return String(s.groupId) === String(activeGroup) &&
+                (normalize(s.name).includes(q) || String(s.qrCode).startsWith(query));
+        }).slice(0, 5);
+        if (fallbackMatches.length > 0) matchedStudents.push(...fallbackMatches);
+    }
 
     if (matchedStudents.length > 0) {
         results.style.display = 'block';
@@ -5673,6 +6243,12 @@ function recordQuickAction(studentId, action) {
     const todayStr = new Date().toLocaleDateString('en-CA');
     const activeGroup = currentGroupId || localStorage.getItem('edu_active_group');
 
+    // ⚡ إصلاح أداء: نتتبع أي الجداول اتغيّرت فعلاً عشان نحفظها هي بس
+    // بدل ما نعيد حفظ كل قاعدة البيانات (بما فيها آلاف الطلاب) في كل ضغطة —
+    // ده كان بيسبب تجمّد/بطء شديد وأحياناً ريفرش مفاجئ للصفحة على الأجهزة الضعيفة.
+    let attendanceChanged = false;
+    let paymentsChanged = false;
+
     // --- NEW: Block Quick Action if subscription is not active ---
     if (!db.settings.isMonthlyActive) {
         playSound('error');
@@ -5715,6 +6291,7 @@ function recordQuickAction(studentId, action) {
                 });
                 s.points = (s.points || 0) + 5;
             }
+            attendanceChanged = true;
 
             SessionManager.addStudent({ ...s, scanTime: new Date().toISOString() });
             currentSessionAttendance = SessionManager.attendance();
@@ -5755,7 +6332,7 @@ function recordQuickAction(studentId, action) {
                 cycleId: db.settings.activeCycle
             };
             db.payments.push(newPayment);
-            db.save();
+            paymentsChanged = true;
             showNotification(`تم تسجيل دفع الاشتراك لـ ${s.name} 💸`, 'success');
 
             // Voice Feedback
@@ -5783,6 +6360,7 @@ function recordQuickAction(studentId, action) {
             category: 'ملزمة/مذكرة',
             cycleId: db.settings.activeCycle || 'misc'
         });
+        paymentsChanged = true;
         showNotification(`تم تسجيل دفع الملزمة لـ ${s.name} ✅`, 'success');
         playSound('success');
         speakName(`${s.name}. تم تسجيل دفع الملزمة`);
@@ -5790,7 +6368,12 @@ function recordQuickAction(studentId, action) {
         if (typeof renderReceiptsList === 'function') renderReceiptsList();
     }
 
-    db.save();
+    // ⚡ إصلاح أداء: نحفظ فقط الجداول اللي فعلاً اتغيّرت (حضور/مدفوعات)
+    // بدل استدعاء db.save() الكامل اللي بيعيد كتابة كل الجداول (بما فيها آلاف
+    // الطلاب) مرتين في نفس العملية — وده اللي كان بيسبب التجمّد/الريفرش المفاجئ.
+    if (attendanceChanged) db.save('attendance');
+    if (paymentsChanged) db.save('payments');
+    if (!attendanceChanged && !paymentsChanged) db.save('payments'); // لضمان حفظ أي تغييرات في الإعدادات (مثل بدء دورة جديدة)
     // Don't close if we just wanted to mark both and see updated state
     // but for search results, we want to stay open, so we handle modal elsewhere if needed.
     // However, for consistency with 'attendance' which is now called from search:
@@ -5915,7 +6498,7 @@ function viewDetailedProfile(id) {
 }
 
 // --- System Helpers ---
-function showNotification(msg, type = 'success') {
+function showNotification(msg, type = 'success', duration = 4000) {
     const n = document.createElement('div');
     n.className = 'fade-in';
     const palette = {
@@ -5928,7 +6511,7 @@ function showNotification(msg, type = 'success') {
     n.style = `position:fixed; bottom:30px; left:30px; max-width:min(420px, calc(100vw - 40px)); background:${state.bg}; color:#fff; padding:1rem 1.4rem; border-radius:8px; z-index:10000; box-shadow:0 16px 35px rgba(16,32,51,0.22); font-weight:700; line-height:1.6; display:flex; align-items:center; gap:0.7rem;`;
     n.innerHTML = `<i class="fas ${state.icon}"></i> <span>${msg}</span>`;
     document.body.appendChild(n);
-    setTimeout(() => n.remove(), 4000);
+    setTimeout(() => n.remove(), duration);
 }
 
 function toggleModal(id, show) {
@@ -6307,13 +6890,7 @@ function endLessonCoding() {
     showNotification('✅ تم إنهاء التشفير وحفظ البيانات بنجاح');
 }
 
-function stopQRScanner() {
-    if (html5QrCode) {
-        html5QrCode.stop().then(() => {
-            document.getElementById('reader').style.display = 'none';
-        }).catch(err => console.error("Error stopping scanner:", err));
-    }
-}
+// (تم دمج stopQRScanner القديمة مع النسخة الآمنة أعلى الملف لمنع تعارض التعريف المكرر)
 
 // --- Audio and Voice Helpers ---
 function playSound(type) {
@@ -6457,7 +7034,7 @@ function _printDailyTreasuryCurrentGroup() {
     const todayStrAr = new Date(todayStr).toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const groupObj = db.groups.find(g => String(g.id) === String(currentGroupId));
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(currentGrade)) : null;
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر مصطفى', centerName: 'سنتر مصطفى' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر المصطفى', centerName: 'سنتر المصطفى' };
 
     const paymentsRows = todayPayments.map((p, i) => {
         const student = db.students.find(s => s.id === p.studentId);
@@ -6517,7 +7094,7 @@ function _printDailyTreasuryCurrentGroup() {
         <body>
             <div class="header">
                 <h1>💰 كشف تحصيل اليوم</h1>
-                <p>${profile.centerName || 'سنتر مصطفى'} — أ/ ${profile.teacherName || 'سنتر مصطفى'}</p>
+                <p>${profile.centerName || 'سنتر المصطفى'} — ${profile.teacherName || 'سنتر المصطفى'}</p>
                 <p>${todayStrAr}</p>
                 <p>${gradeObj ? gradeObj.name : ''}${groupObj ? ' — ' + groupObj.name : ''}</p>
             </div>
@@ -6558,7 +7135,7 @@ function _printDailyTreasuryCurrentGroup() {
                 </tbody>
             </table>
 
-            <div class="footer">طبع بواسطة سنتر مصطفى | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة سنتر المصطفى | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>
     `);
@@ -6571,7 +7148,7 @@ function _printDailyTreasuryCurrentGroup() {
 
 // ── طباعة كشف جميع المجموعات لليوم ──────────────────────────────────
 function _printDailyTreasuryAllGroups() {
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر مصطفى', centerName: 'سنتر مصطفى' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر المصطفى', centerName: 'سنتر المصطفى' };
     const todayStrEn = new Date().toLocaleDateString('en-CA');
     const todayStrAr = new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -6692,7 +7269,7 @@ function _printDailyTreasuryAllGroups() {
         <body>
             <div class="main-header">
                 <h1>🖨️ كشف تحصيل جميع المجموعات</h1>
-                <p>${profile.centerName || 'سنتر مصطفى'} — أ/ ${profile.teacherName || 'سنتر مصطفى'}</p>
+                <p>${profile.centerName || 'سنتر المصطفى'} — ${profile.teacherName || 'سنتر المصطفى'}</p>
                 <p>${todayStrAr}</p>
             </div>
             <div class="grand-summary">
@@ -6714,7 +7291,7 @@ function _printDailyTreasuryAllGroups() {
                 </div>
             </div>
             ${groupSections}
-            <div class="footer">طبع بواسطة سنتر مصطفى | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة سنتر المصطفى | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>`);
     printWindow.document.close();
@@ -6775,7 +7352,7 @@ function printDailyTreasuryReport() {
         <body>
             <div class="header">
                 <h1>تقرير تحصيل الخزنة اليومي</h1>
-                <p>سنتر مصطفى - المدرس</p>
+                <p>سنتر المصطفى - سنتر المصطفى</p>
                 <p style="font-weight: 700;">${todayStrAr}</p>
             </div>
             
@@ -6800,7 +7377,7 @@ function printDailyTreasuryReport() {
                 <tbody>${rows}</tbody>
             </table>
             
-            <div class="footer">طبع بواسطة سنتر مصطفى | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة سنتر المصطفى | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>
     `);
@@ -6863,7 +7440,7 @@ function printSessionAttendance() {
                 </tbody>
             </table>
             <footer style="margin-top: 50px; text-align: center; font-size: 0.8rem; color: #666;">
-                تم استخراج التقرير بواسطة سنتر مصطفى - ${new Date().toLocaleString('ar-EG')}
+                تم استخراج التقرير بواسطة سنتر المصطفى - ${new Date().toLocaleString('ar-EG')}
             </footer>
         </body>
         </html>
@@ -6941,7 +7518,7 @@ function printArchivedSession(filter = 'all') {
             </div>
 
             <footer style="margin-top: 50px; text-align: center; font-size: 0.8rem; color: #999; border-top: 1px solid #eee; padding-top: 10px;">
-                سنتر مصطفى - أرشيف الجلسات الرقمي | استُخرج بتاريخ: ${new Date().toLocaleString('ar-EG')}
+                سنتر المصطفى - أرشيف الجلسات الرقمي | استُخرج بتاريخ: ${new Date().toLocaleString('ar-EG')}
             </footer>
         </body>
         </html>
@@ -7215,7 +7792,8 @@ function collectMonthlyPayment(studentId) {
     };
     db.payments.push(newPayment);
 
-    db.save();
+    // ⚡ إصلاح أداء: حفظ جدول المدفوعات فقط بدل كل الجداول (تفادياً لتجمّد/ريفرش الصفحة)
+    db.save('payments');
     showNotification(`تم تسجيل دفع ${db.settings.monthlyFee} ج.م لـ ${s.name} ✅`);
 
     renderFinances();
@@ -7257,7 +7835,8 @@ function exemptMonthlyPayment(studentId) {
     };
     db.payments.push(newPayment);
 
-    db.save();
+    // ⚡ إصلاح أداء: حفظ جدول المدفوعات فقط بدل كل الجداول
+    db.save('payments');
     showNotification(`تم إعفاء الطالب ${s.name} وقبوله ✅`, 'success');
 
     renderPortalAttendance();
@@ -7304,7 +7883,8 @@ function discountMonthlyPayment(studentId) {
     };
     db.payments.push(newPayment);
 
-    db.save();
+    // ⚡ إصلاح أداء: حفظ جدول المدفوعات فقط بدل كل الجداول
+    db.save('payments');
     showNotification(`تم تسجيل مبلغ ${netAmount} ج.م بعد خصم ${discount} ✅`, 'success');
 
     renderPortalAttendance();
@@ -7791,7 +8371,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
         </head>
         <body>
             <div class="center">
-                <h3 style="margin:5px 0; font-size:15px;">سنتر مصطفى</h3>
+                <h3 style="margin:5px 0; font-size:15px;">سنتر المصطفى</h3>
                 <div style="font-size:11px; color:#555;">${cycleTitle}</div>
             </div>
             <hr>
@@ -7934,7 +8514,7 @@ function _buildBulkReceiptCard(payment) {
     const student = db.students.find(s => s.id == payment.studentId);
     if (!student) return '';
 
-    const profile   = (typeof getProgramProfile === 'function') ? getProgramProfile() : { centerName: 'سنتر مصطفى' };
+    const profile   = (typeof getProgramProfile === 'function') ? getProgramProfile() : { centerName: 'سنتر المصطفى' };
     const cycleTitle = getReceiptCycleTitle(payment);
     const dateStr    = new Date(payment.date).toLocaleDateString('ar-EG');
     const gradeName  = typeof gradeLabel === 'function' ? gradeLabel(student.grade) : (student.grade || '—');
@@ -7944,7 +8524,7 @@ function _buildBulkReceiptCard(payment) {
     return `
         <div class="bulk-receipt-card">
             <div class="bc-header">
-                <span class="bc-center">${profile.centerName || 'سنتر مصطفى'}</span>
+                <span class="bc-center">${profile.centerName || 'سنتر المصطفى'}</span>
                 <span class="bc-num">#${payment.id}</span>
             </div>
             <div class="bc-row"><span class="bc-label">الطالب</span><span class="bc-value">${student.name}</span></div>
@@ -8242,7 +8822,20 @@ function sendWhatsApp(studentId, target) {
     const s = db.students.find(x => x.id === studentId);
     if (!s) return;
     const atts = db.attendance.filter(a => a.studentId == studentId);
-    let msg = `*🏷️ تقرير المتابعة - سنتر مصطفى*\nالطالب: ${s.name}\nحضر: ${atts.length} حصة\nنتمنى لكم دوام التفوق.`;
+    let msg;
+    if (target === 'student') {
+        // رسالة موجّهة للطالب مباشرة
+        msg = `السلام عليكم ورحمة الله وبركاته،\n\n📌 *تقرير متابعة سريع*\nعدد الحصص التي حضرتها حتى الآن: ${atts.length} حصة.\nنتمنى لك دوام التفوق والانتظام.${getTeacherSignatureLine()}`;
+    } else {
+        // رسالة موجّهة لولي الأمر — بنفس الهوية الرسمية الموحّدة للمنصة
+        msg = buildFormalParentMessage({
+            noticeType: 'تقرير متابعة سريع',
+            bodyLines: [
+                `نحيطكم علماً بأن الطالب/ـة *${s.name}* قد حضر/حضرت حتى تاريخه ${atts.length} حصة دراسية.`,
+                `نحرص دائماً على متابعة مستواه/ـا وانتظامه/ـا، ونثمّن تواصلكم المستمر معنا.`
+            ]
+        });
+    }
     const phone = target === 'student' ? s.phone : s.parentPhone;
     window.open(`https://wa.me/2${phone}?text=${encodeURIComponent(msg)}`, '_blank');
 }
@@ -8561,6 +9154,12 @@ function sendMonthlyReportWhatsApp() {
     }
 
     // ── 4. بناء نص الرسالة ──────────────────────────────────
+    const _profileWA = getProgramProfile();
+    // 🔧 الاسم مثبّت دائماً "سنتر المصطفى" — لا يعتمد على الإعدادات المحفوظة
+    const teacherLine = {
+        name: TEACHER_FIXED_NAME,
+        spec: _profileWA.specialization || 'أستاذ التاريخ والجغرافيا'
+    };
     const examsSection = examsAttended.length > 0
         ? examsAttended.map(r => {
             const percent = Math.round((r.mark / r.exam.maxMarks) * 100);
@@ -8581,25 +9180,24 @@ function sendMonthlyReportWhatsApp() {
           }).join('\n')
         : '   لا توجد امتحانات في هذا الشهر';
 
-    const msg =
-`السلام عليكم ورحمة الله وبركاته،
-
-نود إعلامكم بتقرير الأداء الشهري للطالب: ${s.name}
-بمادة المدرس
-📅 الشهر: ${period.label}
+    const msg = buildFormalParentMessage({
+        noticeType: `تقرير الأداء الشهري — ${period.label}`,
+        bodyLines: [
+`الطالب/ـة: *${s.name}*
+مع ${teacherLine.name} - ${teacherLine.spec}
 
 📌 الحضور والغياب:
-   • عدد الحصص التي حضرها الطالب: ${presentCount} حصة
-   • عدد الحصص التي غاب عنها الطالب: ${absentCount} حصة
+   • عدد الحصص التي حضرها الطالب/ـة: ${presentCount} حصة
+   • عدد الحصص التي غاب عنها الطالب/ـة: ${absentCount} حصة
 
 📌 الاختبارات:
-   • عدد الاختبارات التي حضرها الطالب: ${examsAttended.length} من ${examRows.length}
+   • عدد الاختبارات التي حضرها الطالب/ـة: ${examsAttended.length} من ${examRows.length}
 ${allExamsSection}
 
 📌 الاشتراك الشهري:
-   • حالة الاشتراك: ${subStatus}
-
-مع تمنياتنا للطالب بالتوفيق والنجاح 🌟`;
+   • حالة الاشتراك: ${subStatus}`
+        ]
+    });
 
     // ── 5. فتح واتساب ───────────────────────────────────────
     // تنظيف رقم الهاتف: إزالة أي مسافات أو رموز، وإضافة كود مصر 20
@@ -8619,12 +9217,12 @@ function renderMonthlyReportBody() {
     // ✅ إصلاح: نفس منطق sendMonthlyReportWhatsApp — استخدام حدود الدورة
     // الفعلية بدل حساب حدود الشهر الميلادي من جديد.
     const { start, end } = period;
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر مصطفى', centerName: 'سنتر مصطفى' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'سنتر المصطفى', centerName: 'سنتر المصطفى' };
     const groupObj = db.groups.find(g => String(g.id) === String(s.groupId));
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(s.grade)) : null;
 
     // ── Header info ──
-    document.getElementById('report-teacher-name').innerText = `المدرس: أ/ ${profile.teacherName || 'سنتر مصطفى'}`;
+    document.getElementById('report-teacher-name').innerText = `المدرّس: ${profile.teacherName || 'سنتر المصطفى'} — ${profile.specialization || 'أستاذ التاريخ والجغرافيا'}`;
     document.getElementById('report-date-range').innerText = `للفترة: ${period.label}`;
     document.getElementById('rep-st-name').innerText = s.name;
     document.getElementById('rep-st-code').innerText = s.qrCode || '---';
@@ -9083,13 +9681,19 @@ async function exportData() {
         showNotification('⏳ جاري تجميع وضغط البيانات... لحظة من فضلك', 'info');
         if (!StorageEngine.db) await StorageEngine.init();
 
-        const ALL_TABLES = [
+        // 🔧 إصلاح: القائمة تُبنى الآن من الجداول الموجودة فعلياً في IndexedDB
+        // (StorageEngine.db.objectStoreNames) بدل قائمة ثابتة، حتى يشمل النسخ
+        // الاحتياطي تلقائياً أي جدول/ميزة جديدة تُضاف مستقبلاً دون تعديل هذا الكود.
+        const STATIC_FALLBACK_TABLES = [
             'students', 'attendance', 'exams', 'scores', 'expenses',
             'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards',
             'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions',
             'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes',
             'platformCourses', 'platformSubscriptions'
         ];
+        const ALL_TABLES = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+            ? Array.from(new Set([...Array.from(StorageEngine.db.objectStoreNames), ...STATIC_FALLBACK_TABLES]))
+            : STATIC_FALLBACK_TABLES;
 
         // 1. جمع كل البيانات من IndexedDB
         const rawTables = {};
@@ -9108,18 +9712,19 @@ async function exportData() {
             compressed[t] = index.size > 0 ? _applyDict(columnar, index) : columnar;
         }
 
-        // 4. جمع ALL localStorage keys ذات الصلة
-        const LS_KEYS = [
-            'edu_master_settings', 'edu_grades_list', 'edu_active_grade', 'edu_active_group',
-            'edu_app_initialized', 'dailyTreasuryLastArchiveDate', 'dt_last_archive_date',
-            'edu_wa_templates', 'activity_log', 'alamin_theme', 'alamin_print_width',
-            'app_zoom', 'treasuryArchiveHour', '_fallback_passwords'
-        ];
+        // 4. جمع كل مفاتيح localStorage بدون استثناء (Full Snapshot)
+        // 🔧 إصلاح: كانت القائمة القديمة (LS_KEYS) whitelist ثابتة ناقصة —
+        // مثلاً كانت تفتقد 'edu_lesson_coding_sessions' (حالة جلسات التصحيح/الحضور
+        // النشطة لكل مجموعة)، وأي إعداد أو حالة جديدة تُضاف مستقبلاً كانت ستُستبعد
+        // تلقائياً من كل نسخة احتياطية. الآن يُنسخ كل شيء موجود في localStorage
+        // بلا استثناء، فيتحقق الشرط: "أي خاصية... يجب أن تُحفظ تلقائياً حتى لو أُضيفت لاحقاً".
         const lsSnapshot = {};
-        LS_KEYS.forEach(k => {
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k === null) continue;
             const v = localStorage.getItem(k);
             if (v !== null) lsSnapshot[k] = v;
-        });
+        }
 
         // 5. بناء الـ snapshot النهائي
         const snapshot = {
@@ -9202,7 +9807,7 @@ async function importData(input) {
                 console.log('✅ تم قراءة الملف كـ JSON مباشر');
             } catch (_) {}
 
-            // 🔧 محاولة 2: window.edu_initial_data = {...}; (الصيغة القياسية لسنتر مصطفى)
+            // 🔧 محاولة 2: window.edu_initial_data = {...}; (الصيغة القياسية لسنتر المصطفى)
             // greedy match لضمان التقاط الـ JSON كاملاً حتى آخر }
             if (!parsedData) {
                 try {
@@ -9268,7 +9873,7 @@ async function importData(input) {
             }
 
             if (!parsedData || typeof parsedData !== 'object') {
-                throw new Error('لم يتم التعرف على صيغة الملف. تأكد أن الملف هو data.js الصادر من سنتر مصطفى.');
+                throw new Error('لم يتم التعرف على صيغة الملف. تأكد أن الملف هو data.js الصادر من سنتر المصطفى.');
             }
 
             // ⭐ طباعة معلومات تشخيصية
@@ -9301,7 +9906,7 @@ async function importData(input) {
                 '❌ فشل استيراد النسخة الاحتياطية\n\n' +
                 'السبب: ' + errMsg + '\n\n' +
                 'تأكد من الآتي:\n' +
-                '• الملف هو data.js الذي صدّره سنتر مصطفى مباشرة\n' +
+                '• الملف هو data.js الذي صدّره سنتر المصطفى مباشرة\n' +
                 '• اسم الملف لا يهم — data.js أو data (2).js كلها مقبولة\n' +
                 '• لم يتم فتح الملف وتعديله يدوياً\n' +
                 '• حجم الملف أكبر من 1 كيلوبايت'
@@ -9315,68 +9920,6 @@ async function importData(input) {
 }
 
 const APP_THEME_KEY = 'alamin_theme';
-const APP_THEMES = [
-    { id: 'academic', name: 'أكاديمي', swatch: 'academic' },
-    { id: 'emerald', name: 'زمردي', swatch: 'emerald' },
-    { id: 'sunset', name: 'دافئ', swatch: 'sunset' },
-    { id: 'midnight', name: 'ليلي', swatch: 'midnight' }
-];
-
-function applyAppTheme(themeId = 'academic') {
-    const selected = APP_THEMES.find(t => t.id === themeId) ? themeId : 'academic';
-    if (selected === 'academic') {
-        document.body.removeAttribute('data-theme');
-    } else {
-        document.body.dataset.theme = selected;
-    }
-    localStorage.setItem(APP_THEME_KEY, selected);
-
-    document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.theme === selected);
-    });
-}
-
-function initThemeSwitcher() {
-    if (document.getElementById('theme-switcher')) return;
-
-    const headerActions = document.querySelector('header > div:last-child');
-    if (!headerActions) return;
-
-    const switcher = document.createElement('div');
-    switcher.id = 'theme-switcher';
-    switcher.className = 'theme-switcher';
-    switcher.innerHTML = `
-        <button class="btn theme-trigger" type="button" title="تغيير الألوان">
-            <i class="fas fa-palette"></i>
-        </button>
-        <div class="theme-menu">
-            ${APP_THEMES.map(theme => `
-                <button class="theme-option" type="button" data-theme="${theme.id}">
-                    <span>${theme.name}</span>
-                    <span class="theme-swatch ${theme.swatch}"></span>
-                </button>
-            `).join('')}
-        </div>
-    `;
-
-    headerActions.insertBefore(switcher, headerActions.firstChild);
-    switcher.querySelector('.theme-trigger').addEventListener('click', (event) => {
-        event.stopPropagation();
-        switcher.classList.toggle('open');
-    });
-
-    switcher.querySelectorAll('.theme-option').forEach(btn => {
-        btn.addEventListener('click', () => {
-            applyAppTheme(btn.dataset.theme);
-            switcher.classList.remove('open');
-            showNotification(`تم تطبيق ثيم ${btn.innerText.trim()}`, 'success');
-        });
-    });
-
-    document.addEventListener('click', (event) => {
-        if (!switcher.contains(event.target)) switcher.classList.remove('open');
-    });
-}
 
 const DAY_NIGHT_THEMES = [
     { id: 'morning', name: '\u0627\u0644\u0648\u0636\u0639 \u0627\u0644\u0635\u0628\u0627\u062d\u064a', swatch: 'morning' },
@@ -9582,12 +10125,208 @@ function initExperienceEnhancements() {
 function getProgramProfile() {
     if (!db._settings.appProfile) {
         db._settings.appProfile = {
-            centerName: 'سنتر مصطفى',
-            teacherName: 'سنتر مصطفى',
+            centerName: 'سنتر المصطفى',
+            teacherName: 'سنتر المصطفى',
+            specialization: 'أستاذ التاريخ والجغرافيا',
             phone: ''
         };
     }
+    // ✅ توافق مع الملفات القديمة: تأكد من وجود التخصص دائماً
+    if (!db._settings.appProfile.specialization) {
+        db._settings.appProfile.specialization = 'أستاذ التاريخ والجغرافيا';
+    }
+
+    // 🔧 إصلاح: تصحيح تلقائي لأي قيمة خاطئة محفوظة سابقاً باسم المدرّس
+    // (مثل "مدير عام"/"المدير العام" أو حقل فارغ). اسم المدرّس الصحيح دائماً
+    // هو "سنتر المصطفى" — لا يجوز أن يظهر أي لقب وظيفي عام مكانه.
+    // ملحوظة: التحقق يعتمد على وجود كلمة "مدير" كجزء من النص فقط (بدون تقييد
+    // بما يليها) حتى يلتقط كل الصيغ: "مدير"، "المدير"، "مدير عام"، "المدير العام".
+    const isBadValue = (v) => !v || /مدير/.test(String(v).trim());
+    let fixedSomething = false;
+    if (isBadValue(db._settings.appProfile.teacherName)) {
+        db._settings.appProfile.teacherName = 'سنتر المصطفى';
+        fixedSomething = true;
+    }
+    if (isBadValue(db._settings.appProfile.specialization)) {
+        db._settings.appProfile.specialization = 'أستاذ التاريخ والجغرافيا';
+        fixedSomething = true;
+    }
+    if (fixedSomething) {
+        // احفظ التصحيح فوراً حتى لا يتكرر الخطأ في كل مرة يُفتح فيها التطبيق
+        try { localStorage.setItem('edu_master_settings', JSON.stringify(db._settings)); } catch (e) {}
+    }
+
     return db._settings.appProfile;
+}
+
+// نص هوية المدرّس الجاهز للإضافة أسفل أي رسالة (واتساب / SMS)
+// 🔧 إصلاح نهائي: الاسم مثبّت مباشرة "سنتر المصطفى" ولا يعتمد على
+// أي قيمة محفوظة في الإعدادات، حتى لا يظهر أبداً أي لقب خاطئ (مثل "المدير العام")
+// بغض النظر عمّا هو مخزَّن. التخصص وحده قابل للتخصيص من شاشة الإعدادات.
+const TEACHER_FIXED_NAME = 'سنتر المصطفى';
+function getTeacherSignatureLine() {
+    const profile = getProgramProfile();
+    const spec = profile.specialization || 'أستاذ التاريخ والجغرافيا';
+    // توقيع أنيق بخط فاصل يميّز نهاية الرسالة
+    return `\n\n━━━━━━━━━━━━━━\n*${TEACHER_FIXED_NAME}*\n${spec}`;
+}
+
+// ============================================================
+//  نظام موحّد لصياغة رسائل أولياء الأمور — هوية لغوية واحدة للمنصة
+//  ============================================================
+//  يُستخدم في كل رسالة تُرسَل لولي أمر (غياب، تقرير أداء، نتيجة اختبار،
+//  تنبيه أكاديمي، تهنئة تفوق ...) لضمان مقدمة ترحيبية رسمية موحّدة،
+//  عرض منظم للتفاصيل حسب نوع الرسالة، وخاتمة داعية + توقيع واحد للجميع.
+//
+//  bodyLines: مصفوفة أسطر تفاصيل الرسالة (تُبنى حسب نوع الإشعار)
+//  noticeType: عنوان نوع الإشعار الذي يظهر أعلى التفاصيل (مثال: "إشعار غياب")
+//  closing: خاتمة مخصّصة (اختياري) — إن لم تُمرَّر تُستخدم الخاتمة الافتراضية
+// ============================================================
+function buildFormalParentMessage({ noticeType = '', bodyLines = [], closing = null } = {}) {
+    const intro =
+`السلام عليكم ورحمة الله وبركاته،
+يسرنا أن نطلع سيادتكم على آخر مستجدات المستوى الدراسي لابنكم/ابنتكم:`;
+
+    const typeLine = noticeType ? `📌 *نوع الإشعار:* ${noticeType}\n` : '';
+    const body = (Array.isArray(bodyLines) ? bodyLines : [String(bodyLines || '')]).join('\n');
+
+    const defaultClosing =
+`نسأل الله لابنكم/ابنتكم دوام التوفيق والنجاح، ونؤكد حرصنا الدائم على متابعة المستوى الدراسي والتواصل المستمر مع أولياء الأمور بما يحقق أفضل النتائج.`;
+
+    return `${intro}\n\n${typeLine}${body}\n\n${closing || defaultClosing}${getTeacherSignatureLine()}`;
+}
+
+// ============================================================
+//  سجل التعديلات المالية على الأرشيف — Financial Archive Audit Log
+//  يُخزَّن داخل db._settings حتى لا يتطلب تعديل مخطط IndexedDB
+// ============================================================
+function getFinancialEditLog() {
+    if (!Array.isArray(db._settings.financialEditLog)) {
+        db._settings.financialEditLog = [];
+    }
+    return db._settings.financialEditLog;
+}
+
+function _currentEditorLabel() {
+    const profile = getProgramProfile();
+    const roleLabel = (typeof RBAC !== 'undefined' && RBAC.isAdmin && RBAC.isAdmin()) ? 'المشرف' : 'مستخدم';
+    return `${roleLabel} — ${profile.teacherName || 'سنتر المصطفى'}`;
+}
+
+/**
+ * تعديل حالة اشتراك طالب داخل دورة (شهر) مؤرشفة بالفعل:
+ * يسجل دفعة جديدة بتاريخ الدورة نفسها، يسجل العملية في سجل التعديلات المالية،
+ * ثم يعيد حساب كل التقارير المرتبطة تلقائياً.
+ * @param {number|string} cycleId
+ * @param {number|string} studentId
+ * @returns {boolean} نجاح العملية
+ */
+function recordArchivedMonthPayment(cycleId, studentId) {
+    const cycle = db.cycles.find(c => c.id == cycleId);
+    const student = db.students.find(s => s.id == studentId);
+    if (!cycle || !student) {
+        if (typeof showNotification === 'function') showNotification('تعذر العثور على الدورة أو الطالب', 'error');
+        return false;
+    }
+
+    const alreadyPaid = db.payments.some(p =>
+        p.studentId == student.id && p.category === 'اشتراك شهري' && p.cycleId == cycle.id
+    );
+    if (alreadyPaid) {
+        if (typeof showNotification === 'function') showNotification('الطالب مسدد بالفعل لهذه الدورة', 'warning');
+        return false;
+    }
+
+    const amount = cycle.fee || db.settings.monthlyFee || 0;
+    const cycleDate = cycle.date ? new Date(cycle.date) : new Date();
+
+    const newPayment = {
+        id: Date.now(),
+        studentId: student.id,
+        amount,
+        month: cycleDate.getMonth() + 1,
+        year: cycleDate.getFullYear(),
+        date: cycleDate.toISOString(),
+        category: 'اشتراك شهري',
+        cycleId: cycle.id,
+        archivedEdit: true // ✅ علامة تدل أن هذا السداد تم تسجيله بأثر رجعي من الأرشيف
+    };
+    db.payments.push(newPayment);
+
+    // ── تسجيل العملية في سجل التعديلات المالية ──────────────────
+    const log = getFinancialEditLog();
+    log.push({
+        id: Date.now() + 1,
+        studentId: student.id,
+        studentName: student.name,
+        cycleId: cycle.id,
+        month: cycle.title,
+        oldStatus: 'غير مسدد',
+        newStatus: 'تم السداد',
+        amount,
+        paymentId: newPayment.id,
+        editDate: new Date().toLocaleDateString('ar-EG'),
+        editTime: new Date().toLocaleTimeString('ar-EG'),
+        editedBy: _currentEditorLabel()
+    });
+
+    // ✅ حفظ جميع الجداول المتأثرة (payments + الإعدادات وسجل التعديلات)
+    db.save();
+
+    // ── إعادة حساب كل التقارير والإحصائيات تلقائياً ─────────────
+    if (typeof renderFinances === 'function') renderFinances();
+    if (typeof renderMonthlySubscriptionTables === 'function') renderMonthlySubscriptionTables();
+    if (typeof updateDashboardStats === 'function') updateDashboardStats();
+    if (typeof updateExperienceSummary === 'function') updateExperienceSummary();
+
+    if (typeof showNotification === 'function') {
+        showNotification(`تم تسجيل سداد ${student.name} عن ${cycle.title} بنجاح ✅`, 'success');
+    }
+    return true;
+}
+
+// عرض سجل كل التعديلات المالية في نافذة قابلة للطباعة
+function viewFinancialEditLog() {
+    const log = getFinancialEditLog();
+    const profile = getProgramProfile();
+    const rows = log.slice().reverse().map(e => `
+        <tr>
+            <td>${e.studentName}</td>
+            <td>${e.month}</td>
+            <td style="color:#ef4444;">${e.oldStatus}</td>
+            <td style="color:#16a34a; font-weight:700;">${e.newStatus}</td>
+            <td>${e.amount} ج.م</td>
+            <td>${e.editDate}</td>
+            <td>${e.editTime}</td>
+            <td>${e.editedBy}</td>
+        </tr>
+    `).join('') || `<tr><td colspan="8" style="text-align:center; padding:2rem;">لا توجد تعديلات مسجلة بعد</td></tr>`;
+
+    const html = `
+        <html dir="rtl"><head><title>سجل التعديلات المالية</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap');
+            body { font-family: 'Tajawal', sans-serif; padding: 20px; background:#f8fafc; color:#1e293b; }
+            h2 { border-bottom: 3px solid #4f46e5; padding-bottom: 10px; }
+            .sub { color:#64748b; margin-bottom: 20px; }
+            table { width:100%; border-collapse: collapse; background:#fff; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+            th, td { padding: 10px 12px; text-align: center; border-bottom: 1px solid #e2e8f0; font-size: 0.85rem; }
+            th { background:#4f46e5; color:#fff; }
+        </style></head><body>
+        <h2><i class="fas fa-history"></i> سجل التعديلات المالية على الأرشيف</h2>
+        <div class="sub">${profile.teacherName || 'سنتر المصطفى'} — ${profile.specialization || 'أستاذ التاريخ والجغرافيا'}</div>
+        <table>
+            <thead><tr>
+                <th>اسم الطالب</th><th>الشهر / الدورة</th><th>الحالة القديمة</th><th>الحالة الجديدة</th>
+                <th>المبلغ</th><th>تاريخ التعديل</th><th>وقت التعديل</th><th>تم بواسطة</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+        </body></html>`;
+
+    const win = window.open('', '_blank');
+    win.document.write(html);
+    win.document.close();
 }
 
 function applyProgramProfile() {
@@ -9595,10 +10334,13 @@ function applyProgramProfile() {
     document.title = `${profile.centerName} | نظام الإدارة`;
 
     const logo = document.querySelector('.logo');
-    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'سنتر مصطفى'}`;
+    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'سنتر المصطفى'}`;
 
     const userName = document.querySelector('.user-profile span');
-    if (userName) userName.innerText = profile.teacherName || 'سنتر مصطفى';
+    if (userName) userName.innerText = profile.teacherName || 'سنتر المصطفى';
+
+    const userSpec = document.querySelector('.user-profile .user-specialization');
+    if (userSpec) userSpec.innerText = profile.specialization || 'أستاذ التاريخ والجغرافيا';
 }
 
 function initProgramSettings() {
@@ -9649,6 +10391,10 @@ function ensureSettingsSection() {
                     <input id="settings-teacher-name" class="form-input" type="text">
                 </div>
                 <div class="settings-row">
+                    <label for="settings-specialization">التخصص / الوظيفة</label>
+                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: أستاذ التاريخ والجغرافيا">
+                </div>
+                <div class="settings-row">
                     <label for="settings-phone">رقم التواصل</label>
                     <input id="settings-phone" class="form-input" type="text">
                 </div>
@@ -9668,6 +10414,9 @@ function ensureSettingsSection() {
                     <input id="settings-commission" class="form-input" type="number" min="0" max="100" step="1">
                 </div>
                 <p class="settings-note">هذه القيم تطبق على السنة الدراسية الحالية، ويمكن تغييرها لكل سنة بشكل مستقل.</p>
+                <button class="btn settings-choice" onclick="viewFinancialEditLog()" style="margin-top:10px;">
+                    <i class="fas fa-history"></i> سجل التعديلات المالية على الأرشيف
+                </button>
             </div>
 
             <div class="settings-panel">
@@ -9774,6 +10523,7 @@ function renderProgramSettings() {
     const profile = getProgramProfile();
     const center = document.getElementById('settings-center-name');
     const teacher = document.getElementById('settings-teacher-name');
+    const specialization = document.getElementById('settings-specialization');
     const phone = document.getElementById('settings-phone');
     const fee = document.getElementById('settings-monthly-fee');
     const commission = document.getElementById('settings-commission');
@@ -9782,6 +10532,7 @@ function renderProgramSettings() {
 
     if (center) center.value = profile.centerName || '';
     if (teacher) teacher.value = profile.teacherName || '';
+    if (specialization) specialization.value = profile.specialization || '';
     if (phone) phone.value = profile.phone || '';
     if (fee) fee.value = db.settings.monthlyFee || 0;
     if (commission) commission.value = db.settings.centerCommissionPercent || 0;
@@ -9806,8 +10557,9 @@ function renderProgramSettings() {
 
 function saveProgramSettings() {
     const profile = getProgramProfile();
-    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'سنتر مصطفى';
-    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'سنتر مصطفى';
+    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'سنتر المصطفى';
+    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'سنتر المصطفى';
+    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'أستاذ التاريخ والجغرافيا';
     profile.phone = document.getElementById('settings-phone')?.value.trim() || '';
 
     const monthlyFee = parseFloat(document.getElementById('settings-monthly-fee')?.value || '0');
@@ -9949,7 +10701,7 @@ function printPlatformCourseCards() {
       <div class="grid">
         ${rows.map(item => `
           <div class="card">
-            <div class="title">سنتر مصطفى - كود تفعيل كورس</div>
+            <div class="title">سنتر المصطفى - كود تفعيل كورس</div>
             <div class="student">${item.linkedStudentName || 'طالب غير محدد'}</div>
             <div class="meta">${platformGradeLabel(item.grade)} | ${item.courseTitle || '-'}</div>
             <div class="code">${item.code || '-'}</div>
@@ -10005,7 +10757,11 @@ window.printPlatformCourseCards = printPlatformCourseCards;
 window.initPlatformCodesSection = initPlatformCodesSection;
 
 // Unified Application Entry Point
-window.onload = async () => {
+// ⚠️ لا نستخدم window.onload لأنه ينتظر اكتمال كل موارد الصفحة (خطوط، مكتبات CDN خارجية...)
+// وعلى أجهزة بدون إنترنت حقيقي (مثل بعض أنظمة الهاردوير/الدونجل التي تظهر كمتصلة لكنها بلا DNS فعلي)
+// قد تتأخر أو تتجمّد محاولات تحميل هذه الموارد الخارجية لفترة طويلة، فيتجمد التطبيق معها.
+// DOMContentLoaded يعتمد فقط على تحليل HTML/JS المحلي، ولا ينتظر أي مورد خارجي أبداً.
+async function _bootMainApp() {
     try {
         await ensureAppLoaded();
     } catch (err) {
@@ -10072,7 +10828,14 @@ window.onload = async () => {
             }
         });
     }
-};
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _bootMainApp);
+} else {
+    // الصفحة اتحللت خلاص (السكريبت نفسه بيتحمل في آخر body)
+    _bootMainApp();
+}
 
 // Global Exposure (Ensure all functions are accessible from HTML)
 const exposures = {
@@ -10132,16 +10895,29 @@ const exposures = {
     prepareHandoverDownload: async () => {
         showNotification('جاري تجهيز نسخة كاملة للنقل...', 'info');
         const snapshot = {};
-        const tables = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'settings', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+        // 🔧 قائمة ديناميكية من كل الجداول الموجودة فعلياً في IndexedDB
+        const tables = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+            ? Array.from(StorageEngine.db.objectStoreNames)
+            : ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
 
         for (const t of tables) {
-            if (t === 'settings') snapshot[t] = db._settings;
-            else snapshot[t] = await StorageEngine.getAll(t);
+            snapshot[t] = await StorageEngine.getAll(t);
         }
+        snapshot.settings = db._settings;
         snapshot.gradesList = gradesList;
+        // 🔧 إصلاح: أضف نسخة كاملة من localStorage أيضاً حتى لا تُفقد أي إعدادات
+        // (الثيمات، قوالب واتساب، جلسات التصحيح النشطة، ...) عند النقل لجهاز آخر
+        const lsSnap = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k === null) continue;
+            const v = localStorage.getItem(k);
+            if (v !== null) lsSnap[k] = v;
+        }
+        snapshot.ls = lsSnap;
 
         const dataJsContent = `/**
- * سنتر مصطفى Data Storage File - للبيع والنقل
+ * سنتر المصطفى Data Storage File - للبيع والنقل
  * Created: ${new Date().toLocaleString()}
  */
 window.edu_initial_data = ${JSON.stringify(snapshot, null, 4)};`;
@@ -10161,13 +10937,25 @@ window.edu_initial_data = ${JSON.stringify(snapshot, null, 4)};`;
     syncToPermanentFile: async () => {
         showNotification('جاري تجميع البيانات للمزامنة اليدوية...', 'info');
         const snapshot = {};
-        const tables = ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'settings', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
+        // 🔧 قائمة ديناميكية من كل الجداول الموجودة فعلياً في IndexedDB
+        const tables = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+            ? Array.from(StorageEngine.db.objectStoreNames)
+            : ['students', 'attendance', 'exams', 'scores', 'expenses', 'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards', 'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions', 'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes', 'platformCourses', 'platformSubscriptions'];
 
         for (const t of tables) {
-            if (t === 'settings') snapshot[t] = db._settings;
-            else snapshot[t] = await StorageEngine.getAll(t);
+            snapshot[t] = await StorageEngine.getAll(t);
         }
+        snapshot.settings = db._settings;
         snapshot.gradesList = gradesList;
+        // 🔧 إصلاح: أضف نسخة كاملة من localStorage أيضاً حتى لا تُفقد أي إعدادات
+        const lsSnap = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k === null) continue;
+            const v = localStorage.getItem(k);
+            if (v !== null) lsSnap[k] = v;
+        }
+        snapshot.ls = lsSnap;
 
         const json = JSON.stringify(snapshot);
         const el = document.createElement('textarea');
@@ -10276,11 +11064,15 @@ function initIDCardsSection() {
 
     // Filter by current grade
     const gradeGroups = db.groups.filter(g => g.grade == currentGrade);
-    groupSelect.innerHTML = gradeGroups.map(g => `<option value="${g.id}" ${String(g.id) === String(currentGroupId) ? 'selected' : ''}>${g.name}</option>`).join('');
+    rebuildSelectPreservingSelection(
+        groupSelect,
+        () => gradeGroups.map(g => `<option value="${g.id}">${g.name}</option>`).join(''),
+        currentGroupId
+    );
 
     // STRICTLY filter by active group for individual selection
     const groupStudents = db.students.filter(s => String(s.groupId) === String(currentGroupId));
-    const sortedStudents = groupStudents.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+    const sortedStudents = sortStudentsArabic(groupStudents);
     studentSelect.innerHTML = '<option value="">-- اختر الطالب --</option>' +
         sortedStudents.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
 }
@@ -10314,6 +11106,9 @@ function printStudentCode() {
 function generatePrintableIDCards(students, mode = 'normal') {
     const printWindow = window.open('', '_blank');
     const isThermal = mode === 'thermal';
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : {};
+    const teacherName = profile.teacherName || 'سنتر المصطفى';
+    const teacherSpec = profile.specialization || 'أستاذ التاريخ والجغرافيا';
 
     // Get Thermal Config
     const tw = document.getElementById('thermal-w')?.value || 80;
@@ -10329,21 +11124,26 @@ function generatePrintableIDCards(students, mode = 'normal') {
             '@page { size: ' + tw + 'mm ' + th + 'mm; margin: 0; }' +
             '.page { width: ' + tw + 'mm; height: ' + th + 'mm; overflow: hidden; page-break-after: always; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; padding: 2mm; }' +
             '.card { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }' +
-            '.header-text { font-size: ' + (tFont * 0.9) + 'px; font-weight: 800; margin-bottom: 2px; }' +
+            '.header-text { font-size: ' + (tFont * 0.85) + 'px; font-weight: 800; margin-bottom: 0; }' +
+            '.header-spec { font-size: ' + (tFont * 0.55) + 'px; color: #444; margin-bottom: 3px; }' +
             '.student-name { font-weight: 800; font-size: ' + tFont + 'px; margin-bottom: 2px; }' +
             '.info-row { font-size: ' + (tFont * 0.7) + 'px; margin-bottom: 2px; }' +
             '.barcode-area { margin-top: 5px; width: 100%; display: flex; justify-content: center; }' +
             '.barcode { width: 95% !important; max-width: ' + (tw - 10) + 'mm; }'
             :
-            '.page { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; page-break-after: always; }' +
-            '.card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; height: 52mm; display: flex; flex-direction: column; position: relative; box-sizing: border-box; background: #fff; page-break-inside: avoid; }' +
-            '.header { font-weight: 700; font-size: 1.1rem; color: #1e293b; border-bottom: 2px solid #4f46e5; padding-bottom: 5px; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }' +
-            '.info-row { font-size: 0.9rem; margin-bottom: 5px; color: #475569; }' +
+            '@page { size: A4; margin: 8mm; }' +
+            '.page { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: min-content; gap: 4mm; page-break-after: always; }' +
+            '.card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 0; min-height: 56mm; display: flex; flex-direction: column; position: relative; box-sizing: border-box; background: #fff; page-break-inside: avoid; break-inside: avoid; overflow: visible; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }' +
+            '.card-header { background: linear-gradient(135deg, #4f46e5, #4338ca); color: #fff; padding: 8px 12px; }' +
+            '.card-header .teacher-name { font-weight: 800; font-size: 0.95rem; line-height: 1.3; }' +
+            '.card-header .teacher-spec { font-size: 0.65rem; opacity: 0.9; }' +
+            '.card-body { padding: 10px 12px; display: flex; flex-direction: column; flex: 1; }' +
+            '.info-row { font-size: 0.85rem; margin-bottom: 5px; color: #475569; }' +
             '.info-row b { color: #1e293b; }' +
-            '.barcode-area { margin-top: auto; text-align: center; background: #f8fafc; padding: 5px; border-radius: 5px; }' +
-            '.barcode { width: 100% !important; height: auto !important; }' +
-            '.grade-badge { position: absolute; top: 12px; left: 12px; font-size: 0.65rem; background: #4f46e5; color: white; padding: 2px 8px; border-radius: 4px; }' +
-            '@media print { body { padding: 0; } .page { padding: 10mm; } }'
+            '.barcode-area { margin-top: auto; text-align: center; background: #f8fafc; padding: 5px; border-radius: 5px; padding-bottom: 10px; }' +
+            '.barcode { width: 100% !important; height: auto !important; display: block !important; }' +
+            '.grade-badge { position: absolute; top: 8px; left: 12px; font-size: 0.6rem; background: rgba(255,255,255,0.2); color: #fff; padding: 2px 8px; border-radius: 4px; }' +
+            '@media print { body { padding: 0; margin: 0; } .page { padding: 0; } }'
         ) +
         '</style></head><body>';
 
@@ -10355,7 +11155,8 @@ function generatePrintableIDCards(students, mode = 'normal') {
 
             html += '<div class="page">' +
                 '<div class="card">' +
-                '<div class="header-text">منصة سنتر مصطفى</div>' +
+                '<div class="header-text">' + teacherName + '</div>' +
+                '<div class="header-spec">' + teacherSpec + '</div>' +
 
                 '<div style="font-size: ' + (tFont * 0.7) + 'px; color: #333; margin-bottom: 3px;">' + gradeName + '</div>' +
                 '<div class="student-name">' + s.name + '</div>' +
@@ -10381,10 +11182,15 @@ function generatePrintableIDCards(students, mode = 'normal') {
                 const gradeName = gradeObj ? gradeObj.name : 'طالب منضم';
 
                 html += '<div class="card">' +
+                    '<div class="card-header">' +
                     '<div class="grade-badge">' + gradeName + '</div>' +
+                    '<div class="teacher-name">' + teacherName + '</div>' +
+                    '<div class="teacher-spec">' + teacherSpec + '</div>' +
+                    '</div>' +
+                    '<div class="card-body">' +
                     '<div style="background: #f8fafc; padding: 8px; border-radius: 6px; margin-bottom: 10px; border-right: 4px solid #4f46e5;">' +
                     '<span style="font-size: 0.7rem; color: #64748b; display: block;">اسم الطالب:</span>' +
-                    '<div style="font-weight: 800; font-size: 1.25rem; color: #1e293b; line-height: 1.2;">' + s.name + '</div>' +
+                    '<div style="font-weight: 800; font-size: 1.15rem; color: #1e293b; line-height: 1.2;">' + s.name + '</div>' +
                     '</div>' +
                     '<div class="info-row"><b>المجموعة:</b> ' + (groupObj ? groupObj.name : '---') + '</div>' +
                     '<div class="info-row"><b>كود الطالب:</b> ' + s.qrCode + '</div>' +
@@ -10398,6 +11204,7 @@ function generatePrintableIDCards(students, mode = 'normal') {
                     'jsbarcode-width="2" ' +
                     'jsbarcode-fontSize="14"></svg>' +
                     '</div>' +
+                    '</div>' +
                     '</div>';
             });
             html += '</div>';
@@ -10409,8 +11216,19 @@ function generatePrintableIDCards(students, mode = 'normal') {
         'function initBarcodes() {' +
         '  if (typeof JsBarcode === "undefined") { setTimeout(initBarcodes, 50); return; }' +
         '  const barcodes = document.querySelectorAll(".barcode");' +
-        '  barcodes.forEach(el => { try { JsBarcode(el).init(); } catch(e){ console.error(e); } });' +
-        '  setTimeout(() => { window.print(); window.close(); }, 500);' +
+        '  barcodes.forEach(function(el) {' +
+        '    try {' +
+        '      JsBarcode(el).init();' +
+        '      var bbox = el.getBBox();' +
+        '      var pad = 4;' +
+        '      var vx = bbox.x - pad, vy = bbox.y - pad, vw = bbox.width + pad * 2, vh = bbox.height + pad * 2;' +
+        '      el.setAttribute("viewBox", vx + " " + vy + " " + vw + " " + vh);' +
+        '      el.removeAttribute("width");' +
+        '      el.removeAttribute("height");' +
+        '      el.setAttribute("preserveAspectRatio", "xMidYMid meet");' +
+        '    } catch(e){ console.error(e); }' +
+        '  });' +
+        '  setTimeout(function() { window.print(); window.close(); }, 500);' +
         '}' +
         'window.onload = initBarcodes;' +
         '</script></body></html>';
@@ -10442,19 +11260,24 @@ function toggleMobileSidebar() {
 
 // 2. Splash Screen Sequencer — مع دعم RBAC
 function checkAppPassword(val) {
-    const adminPass = RBAC.PASSWORDS.admin; // 20062006
-
     // ── إصلاح تسجيل الدخول بدون إنترنت ──
     // يقرأ كلمة المرور من db._settings أولاً، ثم من localStorage كـ fallback
     // هذا يضمن عمل تسجيل الدخول حتى قبل اكتمال تحميل قاعدة البيانات
-    let employeePass = RBAC.PASSWORDS.employee; // القيمة الافتراضية
+    let adminPass = RBAC.PASSWORDS.admin; // القيمة الافتراضية 20062006
+    let employeePass = RBAC.PASSWORDS.employee; // القيمة الافتراضية 2446
+
+    if (db._settings && db._settings.globalPasswords && db._settings.globalPasswords.admin) {
+        adminPass = db._settings.globalPasswords.admin;
+    }
     if (db._settings && db._settings.globalPasswords && db._settings.globalPasswords.main) {
         employeePass = db._settings.globalPasswords.main;
-    } else {
+    }
+    if (!(db._settings && db._settings.globalPasswords && db._settings.globalPasswords.admin && db._settings.globalPasswords.main)) {
         try {
             const saved = localStorage.getItem('_fallback_passwords');
             if (saved) {
                 const parsed = JSON.parse(saved);
+                if (parsed && parsed.admin) adminPass = parsed.admin;
                 if (parsed && parsed.main) employeePass = parsed.main;
             }
         } catch(e) {}
@@ -10497,9 +11320,7 @@ function checkAppPassword(val) {
             }
             RBAC.applyToUI();
 
-            if (typeof startBookingAutoSync === 'function') {
-                setTimeout(startBookingAutoSync, 3000);
-            }
+            // ✅ تم إلغاء أي مزامنة تلقائية بعد تسجيل الدخول — المزامنة تتم فقط يدوياً من أزرارها المخصصة
             // الموظف يروح الحضور مباشرة، المشرف يروح الداشبورد
             if (role === 'employee') {
                 setTimeout(() => showSection('attendance'), 2200);
@@ -10513,19 +11334,19 @@ function checkAppPassword(val) {
         // إخفاء أي رسالة نجاح سابقة
         if (successDiv) successDiv.style.display = 'none';
 
-        // التحقق من الطول والقيمة
+        // التحقق من الطول والقيمة (بدون افتراض طول ثابت، لأن كلمات المرور قابلة للتغيير الآن)
         if (val.length > 0) {
-            const expectedLength = val.length <= 4 ? 4 : 8;
-            const expectedPass = expectedLength === 4 ? employeePass : adminPass;
-            
-            if (val !== expectedPass.substring(0, val.length)) {
-                // الباسورد غلط حتى لو مكتمل أم لا
+            const matchesAdmin    = adminPass.substring(0, val.length) === val;
+            const matchesEmployee = employeePass.substring(0, val.length) === val;
+
+            if (!matchesAdmin && !matchesEmployee) {
+                // لا يطابق بداية أي من الكلمتين → خطأ فوري
                 if (err) {
                     err.style.display = 'block';
                     err.innerHTML = `<i class="fas fa-exclamation-triangle"></i> كلمة المرور غير صحيحة!`;
                 }
             } else {
-                // ما زال يكتب الباسورد الصحيح - إخفاء الخطأ
+                // ما زال يكتب باسورد صحيح محتمل - إخفاء الخطأ
                 if (err) err.style.display = 'none';
             }
         } else {
@@ -10644,7 +11465,7 @@ function printAttendanceSheets() {
 
     if (students.length === 0) return showNotification('لا يوجد طلاب لطباعة كشوفهم', 'error');
 
-    students.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+    sortStudentsArabic(students);
 
     const groups = {};
     students.forEach(s => {
@@ -10676,7 +11497,7 @@ function printAttendanceSheets() {
     <body>
         <div class="sheet-header">
             <h1>كشوف حضور وغياب الطلاب</h1>
-            <p>سنتر مصطفى - المدرس</p>
+            <p>سنتر المصطفى - سنتر المصطفى</p>
             <p>السنة الدراسية: ${gradeName} | تاريخ الطباعة: ${new Date().toLocaleDateString('ar-EG')}</p>
         </div>
     `;
@@ -10742,7 +11563,7 @@ function printStudentsData() {
 
     if (students.length === 0) return showNotification('لا يوجد طلاب لطباعة بياناتهم', 'error');
 
-    students.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+    sortStudentsArabic(students);
 
     const gradeBadge = document.getElementById('current-grade-badge')?.innerText || 'غير محدد';
 
@@ -10764,7 +11585,7 @@ function printStudentsData() {
     <body onload="window.print()">
         <div class="header">
             <h1>سجل بيانات الطلاب التفصيلي</h1>
-            <p>سنتر مصطفى - المدرس</p>
+            <p>سنتر المصطفى - سنتر المصطفى</p>
             <p>المرحلة: ${gradeBadge} | إجمالي الطلاب: ${students.length}</p>
         </div>
         <table>
@@ -11171,11 +11992,16 @@ async function openPasswordManagement() {
     // 1. Ensure settings has the passwords object
     if (!db._settings.globalPasswords) {
         db._settings.globalPasswords = {
+            admin: '20062006',
             main: '2446',
             finance: '4321',
             unlockPayment: '100qwe',
             endSubscription: '01000'
         };
+        db.save();
+    } else if (!db._settings.globalPasswords.admin) {
+        // ترقية بيانات قديمة لا تحتوي على كلمة مرور المدير المخصّصة
+        db._settings.globalPasswords.admin = '20062006';
         db.save();
     }
 
@@ -11191,13 +12017,14 @@ async function openPasswordManagement() {
     }
 
     const container = document.getElementById('password-management-list');
-    const passwords = db._settings.globalPasswords || { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+    const passwords = db._settings.globalPasswords || { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
 
     let html = `
         <div style="background: #fff8f8; border: 1px solid #fee2e2; padding: 1.5rem; border-radius: 20px; margin-bottom: 1.5rem; box-shadow: var(--shadow-sm);">
             <h4 style="color: var(--danger); margin-bottom: 1rem; font-size: 1.1rem;"><i class="fas fa-lock"></i> كلمات مرور النظام الأساسية</h4>
             <div style="display: grid; gap: 0.8rem;">
-                ${renderPasswordRow('دخول البرنامج الرئيسي', 'main', passwords.main)}
+                ${renderPasswordRow('دخول المدير (Admin)', 'admin', passwords.admin)}
+                ${renderPasswordRow('دخول الموظف', 'main', passwords.main)}
                 ${renderPasswordRow('الخزينة والمالية', 'finance', passwords.finance)}
                 ${renderPasswordRow('فك حماية حذف العمليات', 'unlockPayment', passwords.unlockPayment)}
                 ${renderPasswordRow('إنهاء اشتراك الشهر', 'endSubscription', passwords.endSubscription)}
@@ -11258,7 +12085,7 @@ function verifyOldPassword() {
     } else {
         correctPass = (db._settings.globalPasswords && db._settings.globalPasswords[activePasswordToEdit]) || '';
         if (!correctPass) {
-            const defaults = { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+            const defaults = { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
             correctPass = defaults[activePasswordToEdit];
         }
     }
@@ -11291,7 +12118,7 @@ function updateToNewPassword() {
             return;
         }
     } else {
-        if (!db._settings.globalPasswords) db._settings.globalPasswords = { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+        if (!db._settings.globalPasswords) db._settings.globalPasswords = { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
         db._settings.globalPasswords[activePasswordToEdit] = newVal;
         db.save();
         // ── حفظ فوري في localStorage للعمل بدون إنترنت ──

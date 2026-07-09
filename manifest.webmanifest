@@ -1,7 +1,7 @@
 {
-  "name": "سنتر مصطفى",
-  "short_name": "سنتر مصطفى",
-  "description": "نظام إدارة سنتر مصطفى المتكامل",
+  "name": "أ. محمد سعد دويدار",
+  "short_name": "أ. محمد سعد دويدار",
+  "description": "نظام إدارة أ. محمد سعد دويدار المتكامل",
   "start_url": "./",
   "display": "standalone",
   "orientation": "any",
